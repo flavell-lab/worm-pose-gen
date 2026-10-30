@@ -37,10 +37,12 @@ from collections import OrderedDict
 from fractions import Fraction
 import hashlib
 import operator
+import os
 from pathlib import Path
 import tempfile
 import threading
 from typing import Iterator, Sequence
+import warnings
 
 import av
 import h5py
@@ -239,7 +241,7 @@ class VideoIndex:
         cache = INDEX_DIR / f"{path.stem}-{hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:16]}.npz"
         stamp = np.array([INDEX_VERSION, stat.st_size, stat.st_mtime_ns], dtype=np.int64)
         try:
-            with np.load(cache) as archive:
+            with open(cache, "rb") as handle, np.load(handle) as archive:
                 if np.array_equal(archive["stamp"], stamp):
                     fps = float(archive["fps"])
                     numerator, denominator = (int(v) for v in archive["time_base"])
@@ -247,25 +249,34 @@ class VideoIndex:
                         archive["pts"], archive["keyframe"], Fraction(numerator, denominator),
                         tuple(int(v) for v in archive["shape"]), None if np.isnan(fps) else fps,
                     )
-        except (OSError, KeyError, ValueError):
+        except Exception:  # noqa: BLE001 - a missing, empty or damaged cache file is stale
             pass
         index = cls.build(path)
+        try:
+            index._save(cache, stamp)
+        except OSError as error:
+            # An unwritable cache directory: the video opens all the same, indexed again next time.
+            warnings.warn(f"{path}: video index not cached ({error})", stacklevel=2)
+        return index
+
+    def _save(self, cache: Path, stamp: NDArray[np.int64]) -> None:
         cache.parent.mkdir(parents=True, exist_ok=True)
-        # Every writer owns its temporary file; a reader never sees a half-written index.
+        # Every writer owns its temporary file; a reader never sees a half-written index, even after a crash.
         temporary = None
         try:
             with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=f"{cache.name}.", suffix=".partial", delete=False) as handle:
                 temporary = Path(handle.name)
                 np.savez(
-                    handle, stamp=stamp, pts=index.pts, keyframe=index.keyframe,
-                    time_base=np.array([index.time_base.numerator, index.time_base.denominator]), shape=np.array(index.shape),
-                    fps=np.nan if index.fps is None else index.fps,
+                    handle, stamp=stamp, pts=self.pts, keyframe=self.keyframe,
+                    time_base=np.array([self.time_base.numerator, self.time_base.denominator]), shape=np.array(self.shape),
+                    fps=np.nan if self.fps is None else self.fps,
                 )
+                handle.flush()
+                os.fsync(handle.fileno())
             temporary.replace(cache)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-        return index
 
 
 def _decoded_timestamps(container: av.container.InputContainer, stream: av.VideoStream, start: int) -> list[int]:

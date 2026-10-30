@@ -246,6 +246,33 @@ class VideoFramesTests(unittest.TestCase):
                         for k in reversed(range(reader.frame_count)):
                             self.assertEqual(_decoded_index(reader[k]), k)
 
+    def test_a_damaged_index_cache_is_rebuilt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            path = Path(directory) / "clip.avi"
+            _write_video(path, "mjpeg", frames=10)
+            open_frames(path).close()
+            (cache,) = (Path(directory) / "index").glob("clip-*.npz")
+            whole = cache.read_bytes()
+            for damaged in (b"", whole[: len(whole) // 2]):
+                cache.write_bytes(damaged)
+                with open_frames(path) as reader:
+                    self.assertEqual(_decoded_index(reader[9]), 9)
+                self.assertEqual(cache.read_bytes(), whole)
+
+    def test_an_unwritable_index_directory_keeps_the_index_in_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            index = Path(directory) / "index"
+            index.mkdir(mode=0o500)
+            path = Path(directory) / "clip.avi"
+            _write_video(path, "mjpeg", frames=10)
+            try:
+                with mock.patch.object(frame_reader, "INDEX_DIR", index), self.assertWarnsRegex(UserWarning, "video index not cached"):
+                    with open_frames(path) as reader:
+                        self.assertEqual((reader.frame_count, _decoded_index(reader[9])), (10, 9))
+                self.assertEqual(list(index.iterdir()), [])
+            finally:
+                index.chmod(0o700)
+
     def test_index_cache_is_reused_and_rebuilt_when_the_file_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
             path = Path(directory) / "clip.mp4"
