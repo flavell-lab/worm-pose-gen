@@ -13,12 +13,15 @@ import h5py
 import numpy as np
 from PIL import Image
 
-from tests.test_frame_reader import FRAMES as VIDEO_FRAMES, HEIGHT as VIDEO_HEIGHT, WIDTH as VIDEO_WIDTH, _write_video
+from tests.test_frame_reader import (
+    FRAMES as VIDEO_FRAMES, HEIGHT as VIDEO_HEIGHT, WIDTH as VIDEO_WIDTH, _decoded_index, _write_damaged_mjpeg, _write_video,
+)
 from worm_pose_gen import frame_reader
 from worm_pose_gen.frame_reader import open_frames
 from worm_pose_gen.recordings import (
     RecordingInfo,
     RecordingProber,
+    RecordingSource,
     find_recordings,
     list_recordings,
     probe_frames,
@@ -109,8 +112,30 @@ class ListRecordingsTests(RecordingsFixture):
         self.assertTrue(listed["damaged"].error)
         video = self.data / "2024-01-31" / "worm005.MP4"
         thumbnail = np.asarray(Image.open(io.BytesIO(thumbnail_png(video, 7, scale=1.0, dataset_root=self.root / "none"))))
-        with open_frames(video) as frames:
-            np.testing.assert_array_equal(thumbnail, frames[7])
+        self.assertEqual(_decoded_index(thumbnail), 7)
+
+    def test_a_damaged_video_keeps_its_readable_frames(self) -> None:
+        # An interrupted acquisition ends in part of a frame; a damaged frame mid-file is sampled by the flat field (all 60 are).
+        truncated, damaged = self.data / "truncated.avi", self.data / "damaged.avi"
+        _write_video(truncated, "mjpeg")
+        truncated.write_bytes(truncated.read_bytes()[: int(truncated.stat().st_size * 0.93)])
+        bad = 20  # not one the probe reads (first, middle, last)
+        _write_damaged_mjpeg(damaged, damaged=bad)
+        for path in (truncated, damaged):
+            with self.subTest(path.name):
+                facts = probe_recording(path)
+                self.assertTrue(facts["readable"], facts["error"])
+                source = RecordingSource(path, self.root / "fields")
+                try:
+                    self.assertEqual(source.frame_count, facts["frames"])
+                    self.assertEqual(_decoded_index(source.read(source.frame_count - 1)), source.frame_count - 1)
+                    self.assertIsNotNone(source.flat_field())
+                finally:
+                    source.close()
+        self.assertLess(probe_recording(truncated)["frames"], VIDEO_FRAMES)
+        with open_frames(damaged) as frames:
+            with self.assertRaises(OSError):
+                frames[bad]
 
     def test_without_probing_new_files_are_pending_until_a_prober_saves_them(self) -> None:
         cache = self.root / "index.json"
@@ -290,8 +315,6 @@ class ThumbnailTests(RecordingsFixture):
         self.assertLess(small[:, 16].min(), small[0, 16] - 30)
 
     def test_flat_fielded_thumbnail_uses_the_cached_field(self) -> None:
-        from worm_pose_gen.recordings import RecordingSource
-
         dataset_root = self.root / "dataset"
         source = RecordingSource(self.rec_a, dataset_root / "flat_fields")
         source.flat_field()

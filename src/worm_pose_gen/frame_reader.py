@@ -7,17 +7,25 @@ over the recording.  :func:`open_frames` gives each the same reader for an
 HDF5 recording (a ``[T,H,W]`` dataset, one frame per chunk) and for a video
 (``.avi``, ``.mp4``) decoded through PyAV.
 
-A video is indexed once: its packets are demuxed without decoding, and
-frame ``k`` is the ``k``-th presentation timestamp in display order, so a
-frame is the same image whatever order frames are read in, with B-frames
-and variable frame rate too; the timestamps are also the frames' times
-(``times``).  The index is cached under the data directory's cache and
-rebuilt when the file's size or modification time changes.  A frame is
-decoded by seeking to the keyframe at or before it and decoding forward to
-its timestamp; a read of the frame after the last decoded one, or of a
-later frame of its group of pictures, decodes forward without seeking, so
-consecutive reads cost one decode each.  Decoded frames are kept in a small
-LRU cache.
+A video is indexed once: frame ``k`` is the ``k``-th frame the decoder
+outputs, identified by its presentation timestamp, so a frame is the same
+image whatever order frames are read in, with B-frames and variable frame
+rate too.  Where packets carry presentation timestamps (MP4 and MOV) or
+every packet is a keyframe (the lab's MJPEG), the packets are demuxed
+without decoding and their timestamps, sorted, are the frames in display
+order; an AVI's packets carry their decode order instead, which B-frames
+reorder, so such a video is decoded once to number its frames.  An edit
+list's pre-roll packets, which the decoder never outputs, are not frames,
+and a truncated file's last packets, which do not decode, are dropped (an
+interrupted acquisition stays readable up to its last whole frame).  The
+sorted timestamps are also the frames' times (``times``).  The index is
+cached under the data directory's cache and rebuilt when the file's size or
+modification time changes.  A frame is decoded by seeking to the keyframe
+at or before it and decoding forward to its timestamp; a read of the frame
+after the last decoded one, or of a later frame of its group of pictures,
+decodes forward without seeking, so consecutive reads cost one decode
+each.  Decoded frames are kept in a small LRU cache.  A frame that does not
+decode raises ``OSError``, as an unreadable HDF5 chunk does.
 
 Frames are decoded to 8-bit gray through swscale, pixel for pixel what
 ``ffmpeg -pix_fmt gray`` (the old conversion to HDF5) wrote.
@@ -46,7 +54,7 @@ DATASET_PATH = "/img_nir"
 HDF5_SUFFIXES = (".h5", ".hdf5")
 VIDEO_SUFFIXES = (".avi", ".mp4")
 INDEX_DIR = CACHE_DIR / "video_index"
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 # Decoded frames kept per video reader (about 90 frames of 968x732).
 CACHE_BYTES = 64 * 2**20
 # Decoder threads per video: frame threads speed H.264 up about as many times (130 frames/s single-threaded).
@@ -156,7 +164,7 @@ class Hdf5Frames(FrameReader):
 
 
 class VideoIndex:
-    """A video's frames in display order: presentation timestamps (in ``time_base`` seconds) and keyframe flags, plus its size and rate."""
+    """A video's frames in display order: the timestamp each decodes with (in ``time_base`` seconds) and keyframe flags, plus its size and rate."""
 
     def __init__(
         self, pts: NDArray[np.int64], keyframe: NDArray[np.bool_], time_base: Fraction, shape: tuple[int, int], fps: float | None
@@ -167,9 +175,16 @@ class VideoIndex:
         self.shape = shape
         self.fps = fps
 
+    @property
+    def times(self) -> NDArray[np.float64]:
+        """Each frame's time in seconds from the first: the ``k``-th smallest timestamp (a decoder-numbered AVI's are packet numbers)."""
+
+        pts = np.sort(self.pts)
+        return (pts - pts[0]).astype(np.float64) * float(self.time_base)
+
     @classmethod
     def build(cls, path: Path) -> VideoIndex:
-        """Demux every packet of the first video stream without decoding it."""
+        """Demux every packet of the first video stream; decode the whole stream only where packet timestamps are in decode order, else its end."""
 
         timestamps, keyframes = [], []
         with av.open(str(path)) as container:
@@ -177,23 +192,44 @@ class VideoIndex:
                 raise ValueError(f"{path}: no video stream")
             stream = container.streams.video[0]
             for packet in container.demux(stream):
-                if packet.size == 0:  # the flush packet at the end, or an empty (dropped) frame
+                # The flush packet at the end, an empty (dropped) frame, and an edit list's pre-roll, which the decoder never outputs.
+                if packet.size == 0 or packet.is_discard:
                     continue
                 timestamp = packet.pts if packet.pts is not None else packet.dts
                 if timestamp is None:
                     raise ValueError(f"{path}: a packet has no timestamp")
                 timestamps.append(timestamp)
                 keyframes.append(packet.is_keyframe)
+            if not timestamps:
+                raise ValueError(f"{path} holds no frames")
             rate = stream.average_rate or stream.guessed_rate
             time_base = Fraction(stream.time_base)
             shape = (int(stream.codec_context.height), int(stream.codec_context.width))
-        if not timestamps:
-            raise ValueError(f"{path} holds no frames")
-        order = np.argsort(np.asarray(timestamps, dtype=np.int64), kind="stable")
-        pts = np.asarray(timestamps, dtype=np.int64)[order]
-        if np.any(np.diff(pts) == 0):
+            packet_pts, packet_key = np.asarray(timestamps, dtype=np.int64), np.asarray(keyframes, dtype=bool)
+            if packet_key.all() or "mp4" in container.format.name.split(","):
+                # Presentation timestamps: sorted, they are the frames in display order.
+                order = np.argsort(packet_pts, kind="stable")
+                pts, keyframe = packet_pts[order], packet_key[order]
+                # Decode the end, from the last keyframe that yields a frame, and drop the frames after the last that decodes.
+                for start in np.union1d(0, np.flatnonzero(keyframe))[::-1]:
+                    decoded = _decoded_timestamps(container, stream, int(pts[start]))
+                    if decoded:
+                        last = int(np.searchsorted(pts, max(decoded)))
+                        pts, keyframe = pts[: last + 1], keyframe[: last + 1]
+                        break
+                else:
+                    raise ValueError(f"{path}: no frame decodes")
+            else:
+                # An AVI's packet timestamps count packets in decode order, which B-frames reorder: number the
+                # frames as the decoder outputs them, each identified by the timestamp of the packet it came from.
+                stream.thread_type = "AUTO"
+                pts = np.asarray(_decoded_timestamps(container, stream, int(packet_pts.min())), dtype=np.int64)
+                if not len(pts):
+                    raise ValueError(f"{path}: no frame decodes")
+                keyframe = np.isin(pts, packet_pts[packet_key])
+        if np.any(np.diff(np.sort(pts)) == 0):
             raise ValueError(f"{path}: two frames share a timestamp")
-        return cls(pts, np.asarray(keyframes, dtype=bool)[order], time_base, shape, None if rate is None else float(rate))
+        return cls(pts, keyframe, time_base, shape, None if rate is None else float(rate))
 
     @classmethod
     def load(cls, path: Path) -> VideoIndex:
@@ -232,6 +268,22 @@ class VideoIndex:
         return index
 
 
+def _decoded_timestamps(container: av.container.InputContainer, stream: av.VideoStream, start: int) -> list[int]:
+    """Timestamps of the frames decoded from the keyframe at or before ``start`` to the end; a packet that does not decode is skipped."""
+
+    container.seek(start, stream=stream, backward=True, any_frame=False)
+    timestamps = []
+    for packet in container.demux(stream):
+        if packet.size == 0 and packet.dts is not None:  # a dropped frame (the flush packet has no timestamp)
+            continue
+        try:
+            frames = packet.decode()
+        except av.FFmpegError:
+            continue
+        timestamps.extend(frame.pts if frame.pts is not None else frame.dts for frame in frames)
+    return timestamps
+
+
 class VideoFrames(FrameReader):
     """A video decoded through PyAV: frame ``k`` is the ``k``-th frame of :class:`VideoIndex`, decoded to 8-bit gray."""
 
@@ -241,10 +293,13 @@ class VideoFrames(FrameReader):
         self.frame_count = len(self.index.pts)
         self.shape = self.index.shape
         self.fps = self.index.fps
-        self.times = (self.index.pts - self.index.pts[0]).astype(np.float64) * float(self.index.time_base)
+        self.times = self.index.times
         positions = np.arange(self.frame_count)
         # The keyframe at or before each frame (the first frame when none is).
         self._key_before = np.maximum.accumulate(np.where(self.index.keyframe, positions, 0))
+        # Timestamps sorted, and their frames: a decoded frame's position (a decoder-numbered AVI's are not in order).
+        self._by_pts = np.argsort(self.index.pts, kind="stable")
+        self._sorted_pts = self.index.pts[self._by_pts]
         self._lock = threading.Lock()
         self._container = av.open(str(self.path))
         self._stream = self._container.streams.video[0]
@@ -290,13 +345,15 @@ class VideoFrames(FrameReader):
         # Forward to the next frame or within the group of pictures; a seek otherwise (for intra-only
         # video, where every frame is a keyframe, a seek costs about what decoding one frame does).
         ahead = self._decoded is not None and self._position < index
-        if not (ahead and (index == self._position + 1 or self._key_before[index] <= self._position)):
-            self._seek(int(self._key_before[index]))
         try:
+            if not (ahead and (index == self._position + 1 or self._key_before[index] <= self._position)):
+                self._seek(int(self._key_before[index]))
             return self._decode_forward(index)
-        except Exception:
+        except Exception as error:
             # The decoder is left mid-stream: the next read seeks.
             self._decoded = None
+            if isinstance(error, av.FFmpegError):
+                raise OSError(f"{self.path}: frame {index} not decoded: {error}") from error
             raise
 
     def _decode_forward(self, index: int) -> NDArray[np.uint8]:
@@ -305,9 +362,10 @@ class VideoFrames(FrameReader):
             if frame is None:
                 raise OSError(f"{self.path}: frame {index} not decoded before the end of the video")
             timestamp = frame.pts if frame.pts is not None else frame.dts
-            position = int(np.searchsorted(self.index.pts, timestamp)) if timestamp is not None else self.frame_count
-            if position == self.frame_count or self.index.pts[position] != timestamp:
+            found = int(np.searchsorted(self._sorted_pts, timestamp)) if timestamp is not None else self.frame_count
+            if found == self.frame_count or self._sorted_pts[found] != timestamp:
                 continue
+            position = int(self._by_pts[found])
             if not self._key_seen and position >= self._key:
                 if position > self._key and self._key > 0:
                     # The seek landed past its keyframe: seek to the one before.

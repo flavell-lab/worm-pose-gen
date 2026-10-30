@@ -45,7 +45,7 @@ def _decoded_index(image: np.ndarray) -> int:
 
 
 def _write_video(path: Path, codec: str, frames: int = FRAMES, milliseconds: list[int] | None = None) -> None:
-    """MJPEG (every frame a keyframe), or H.264 with B-frames and an open group of 12 pictures.
+    """MJPEG (every frame a keyframe), or H.264 with B-frames and an open group of 12 pictures, in the container of ``path``'s suffix.
 
     ``milliseconds`` gives each frame's presentation time (a variable frame rate); 20 frames/s otherwise.
     """
@@ -75,9 +75,10 @@ class VideoFramesTests(unittest.TestCase):
         cls.root = Path(cls.directory.name)
         cls.patch = mock.patch.object(frame_reader, "INDEX_DIR", cls.root / "video_index")
         cls.patch.start()
-        cls.videos = {"avi": cls.root / "mjpeg.avi", "mp4": cls.root / "h264.mp4"}
+        cls.videos = {"avi": cls.root / "mjpeg.avi", "mp4": cls.root / "h264.mp4", "h264 avi": cls.root / "h264.avi"}
         _write_video(cls.videos["avi"], "mjpeg")
         _write_video(cls.videos["mp4"], "libx264")
+        _write_video(cls.videos["h264 avi"], "libx264")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -86,14 +87,26 @@ class VideoFramesTests(unittest.TestCase):
 
     def _reader(self, kind: str) -> VideoFrames:
         # A one-frame cache, so every read below decodes.
-        return VideoFrames(self.videos[kind], cache_bytes=1)
+        return self._reader_of(self.videos[kind])
+
+    @staticmethod
+    def _reader_of(path: Path) -> VideoFrames:
+        return VideoFrames(path, cache_bytes=1)
 
     def test_the_test_videos_are_what_they_claim(self) -> None:
-        with open_frames(self.videos["mp4"]) as reader:
-            self.assertEqual(int(reader.index.keyframe.sum()), FRAMES // 12)
+        for kind in ("mp4", "h264 avi"):
+            with open_frames(self.videos[kind]) as reader:
+                self.assertEqual(int(reader.index.keyframe.sum()), FRAMES // 12)
         with av.open(str(self.videos["mp4"])) as container:
             decode_order = [p.pts for p in container.demux() if p.size]
         self.assertNotEqual(decode_order, sorted(decode_order), "no B-frames")
+        # The AVI's packets number the decode order, so their timestamps say nothing of the B-frames' display order.
+        with av.open(str(self.videos["h264 avi"])) as container:
+            packets = [p.pts for p in container.demux() if p.size]
+        with av.open(str(self.videos["h264 avi"])) as container:
+            decoded = [f.pts for f in container.decode(video=0)]
+        self.assertEqual(packets, sorted(packets))
+        self.assertNotEqual(decoded, sorted(decoded), "no B-frames")
         with open_frames(self.videos["avi"]) as reader:
             self.assertTrue(reader.index.keyframe.all())
 
@@ -118,6 +131,7 @@ class VideoFramesTests(unittest.TestCase):
             with self.subTest(kind):
                 with self._reader(kind) as reader:
                     sequential = np.stack([reader[k] for k in range(FRAMES)])
+                self.assertEqual([_decoded_index(image) for image in sequential], list(range(FRAMES)))
                 with self._reader(kind) as reader:
                     for k in rng.permutation(FRAMES):
                         np.testing.assert_array_equal(reader[int(k)], sequential[k])
@@ -177,6 +191,61 @@ class VideoFramesTests(unittest.TestCase):
                     np.testing.assert_allclose(reader.times, np.array(milliseconds) / 1000.0, atol=1e-9)
                     self.assertEqual([_decoded_index(reader[k]) for k in (3, 9, 15)], [3, 9, 15])
 
+    def test_an_edit_list_pre_roll_is_not_frames(self) -> None:
+        # An MP4 cut by stream copy at frame 27, mid group of pictures: frames 24-26 are decoded as references, not shown.
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            cut = Path(directory) / "cut.mp4"
+            with av.open(str(self.videos["mp4"])) as source, av.open(str(cut), "w") as target:
+                stream = source.streams.video[0]
+                copy = target.add_stream_from_template(stream)
+                packets = [p for p in source.demux(stream) if p.size]
+                pts = sorted(p.pts for p in packets)
+                key, shift = pts[24], pts[27]
+                started = False
+                for packet in packets:
+                    started = started or (packet.is_keyframe and packet.pts == key)
+                    if started:
+                        packet.pts, packet.dts, packet.stream = packet.pts - shift, packet.dts - shift, copy
+                        target.mux(packet)
+            with av.open(str(cut)) as container:
+                self.assertEqual(sum(p.is_discard for p in container.demux() if p.size), 3)
+            with self._reader_of(cut) as reader:
+                self.assertEqual(reader.frame_count, FRAMES - 27)
+                np.testing.assert_allclose(reader.times, np.arange(FRAMES - 27) / 20.0)
+                for k in [*np.random.default_rng(2).permutation(FRAMES - 27), *reversed(range(FRAMES - 27))]:
+                    self.assertEqual(_decoded_index(reader[int(k)]), 27 + k)
+
+    def test_a_frame_that_does_not_decode_is_an_os_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            path = Path(directory) / "damaged.avi"
+            _write_damaged_mjpeg(path, damaged=17)
+            with self._reader_of(path) as reader:
+                self.assertEqual(reader.frame_count, FRAMES)
+                for k in (16, 17, 18, 17, 16, 17):
+                    if k == 17:
+                        with self.assertRaisesRegex(OSError, "frame 17 not decoded") as raised:
+                            reader[k]
+                        self.assertIsInstance(raised.exception.__cause__, av.FFmpegError)
+                    else:
+                        self.assertEqual(_decoded_index(reader[k]), k)
+                with self.assertRaises(OSError):
+                    reader[10:20]
+
+    def test_a_truncated_video_reads_up_to_its_last_whole_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            whole = Path(directory) / "whole.avi"
+            _write_video(whole, "mjpeg")
+            for fraction in (0.5, 0.7, 0.93):
+                with self.subTest(fraction):
+                    path = Path(directory) / f"cut{fraction}.avi"
+                    data = whole.read_bytes()
+                    path.write_bytes(data[: int(len(data) * fraction)])
+                    with self._reader_of(path) as reader:
+                        self.assertEqual(reader.frame_count, _frames_that_decode(path))
+                        self.assertGreater(reader.frame_count, FRAMES * fraction - 5)
+                        for k in reversed(range(reader.frame_count)):
+                            self.assertEqual(_decoded_index(reader[k]), k)
+
     def test_index_cache_is_reused_and_rebuilt_when_the_file_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
             path = Path(directory) / "clip.mp4"
@@ -211,6 +280,36 @@ class VideoFramesTests(unittest.TestCase):
                 container.mux(packet)
             with self.assertRaisesRegex(ValueError, "no video stream"):
                 open_frames(path)
+
+
+def _write_damaged_mjpeg(path: Path, damaged: int) -> None:
+    """An MJPEG AVI of ``FRAMES`` coded frames whose frame ``damaged`` keeps only the first half of its JPEG."""
+
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("mjpeg", rate=20)
+        stream.width, stream.height, stream.pix_fmt = WIDTH, HEIGHT, "yuvj420p"
+        for index in range(FRAMES):
+            for packet in stream.encode(av.VideoFrame.from_ndarray(_coded_frame(index), format="gray")):
+                if index == damaged:
+                    data = bytes(packet)
+                    half = av.Packet(data[: len(data) // 2])
+                    half.stream, half.pts, half.dts, half.is_keyframe = stream, packet.pts, packet.dts, True
+                    packet = half
+                container.mux(packet)
+        container.mux(stream.encode(None))
+
+
+def _frames_that_decode(path: Path) -> int:
+    """Frames a plain decode of the whole file yields, skipping the packets that fail."""
+
+    count = 0
+    with av.open(str(path)) as container:
+        for packet in container.demux(video=0):
+            try:
+                count += len(packet.decode())
+            except av.FFmpegError:
+                pass
+    return count
 
 
 class Hdf5FramesTests(unittest.TestCase):
