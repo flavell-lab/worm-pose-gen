@@ -19,11 +19,11 @@ import json
 from pathlib import Path
 import time
 
-import h5py
 import numpy as np
 
 from worm_pose_gen.classical import ClassicalConfig, segment_dark_ridge
 from worm_pose_gen.flat_field import apply_flat_field, estimate_flat_field
+from worm_pose_gen.frame_reader import DATASET_PATH, open_frames
 from worm_pose_gen.mask_fit import (
     MaskFitConfig,
     fill_narrow_holes,
@@ -40,7 +40,7 @@ DEFAULT_RECORDING = Path(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recording", type=Path, default=DEFAULT_RECORDING)
-    parser.add_argument("--dataset", default="/img_nir")
+    parser.add_argument("--dataset", default=DATASET_PATH, help="the HDF5 dataset (ignored for a video)")
     parser.add_argument("--scan-frames", type=int, default=300)
     parser.add_argument("--flat-field-frames", type=int, default=64)
     parser.add_argument("--dark-gain", type=float, default=1.3)
@@ -56,15 +56,9 @@ def main() -> int:
     cfg = ClassicalConfig()
     fit_config = MaskFitConfig()
     rows: list[dict[str, float | int]] = []
-    with h5py.File(args.recording, "r") as handle:
-        dataset = handle[args.dataset]
-        count = int(dataset.shape[0])
-        calibration = np.stack(
-            [
-                np.asarray(dataset[int(index)], dtype=np.uint8)
-                for index in np.linspace(0, count - 1, args.flat_field_frames, dtype=np.int64)
-            ]
-        )
+    with open_frames(args.recording, args.dataset) as reader:
+        count = reader.frame_count
+        calibration = reader.read(np.linspace(0, count - 1, args.flat_field_frames, dtype=np.int64))
         field = estimate_flat_field(
             calibration, temporal_quantile=0.8, spatial_radius=31,
             smoothing_passes=2, min_gain=0.5, max_gain=2.5,
@@ -83,7 +77,7 @@ def main() -> int:
         )
         frames: dict[int, np.ndarray] = {}
         for index in np.linspace(0, count - 1, args.scan_frames, dtype=np.int64):
-            frame = np.asarray(dataset[int(index)], dtype=np.uint8)
+            frame = reader[int(index)]
             component = segment_dark_ridge(frame, cfg).component
             area = int(component.sum())
             if area < cfg.min_area:

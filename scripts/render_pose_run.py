@@ -21,12 +21,10 @@ import json
 from pathlib import Path
 import time
 
-import h5py
 import numpy as np
 import torch
 
-from worm_pose_gen.flat_field import apply_flat_field
-from worm_pose_gen.recordings import DATASET_PATH, RecordingSource
+from worm_pose_gen.recordings import RecordingSource
 from worm_pose_gen.pose_run import clean_mask, cleanup_options, draw_residual, render_tube, residual_caption, residual_rows, write_overlay_video
 from worm_pose_gen.settings import CACHE_DIR
 from worm_pose_gen.segmenter import load_segmenter
@@ -53,10 +51,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def flat_fielded(raw: np.ndarray, field) -> np.ndarray:
-    return np.clip(np.rint(apply_flat_field(raw, field, clip=(0.0, 255.0))), 0, 255).astype(np.uint8)
-
-
 def main() -> int:
     args = parse_args()
     summary = json.loads((args.run / "summary.json").read_text())
@@ -68,34 +62,32 @@ def main() -> int:
     n_points = arrays["centerline_xy"].shape[1]
     frame_index = arrays["frame_index"]
     try:
-        with h5py.File(recording, "r") as handle:
-            dataset = handle[DATASET_PATH]
-            video_path = args.run / "overlay.mp4"
-            if args.video and (args.force or not video_path.exists()):
-                started = time.perf_counter()
-                write_overlay_video(
-                    video_path, dataset, field, arrays, caption_prefix=recording.stem,
-                    fps=args.fps, scale=args.scale, quality=args.quality, slab=args.slab, device=device,
+        video_path = args.run / "overlay.mp4"
+        if args.video and (args.force or not video_path.exists()):
+            started = time.perf_counter()
+            write_overlay_video(
+                video_path, source.frames, field, arrays, caption_prefix=recording.stem,
+                fps=args.fps, scale=args.scale, quality=args.quality, slab=args.slab, device=device,
+            )
+            print(f"wrote {video_path} in {time.perf_counter() - started:.0f} s", flush=True)
+        requested = [int(v) for v in args.frames.split(",") if v.strip()]
+        rows = residual_rows(arrays, args.residual_frames, requested)
+        if rows:
+            module = load_segmenter(args.checkpoint, device)
+            threshold = float(summary.get("threshold", 0.5))
+            cleanup = cleanup_options(summary)
+            for row in rows:
+                index = int(frame_index[row])
+                frame = source.corrected(index)[1]
+                probability = module.predict_probability_batch(frame[None], batch_size=1)[0]
+                mask, _ = clean_mask(probability, threshold, device=device, **cleanup)
+                tube = render_tube(
+                    arrays["centerline_xy"][row], arrays["width_profile"][row], *frame.shape, window=tuple(arrays["crop"][row]), device=device
                 )
-                print(f"wrote {video_path} in {time.perf_counter() - started:.0f} s", flush=True)
-            requested = [int(v) for v in args.frames.split(",") if v.strip()]
-            rows = residual_rows(arrays, args.residual_frames, requested)
-            if rows:
-                module = load_segmenter(args.checkpoint, device)
-                threshold = float(summary.get("threshold", 0.5))
-                cleanup = cleanup_options(summary)
-                for row in rows:
-                    index = int(frame_index[row])
-                    frame = flat_fielded(np.asarray(dataset[index], dtype=np.uint8), field)
-                    probability = module.predict_probability_batch(frame[None], batch_size=1)[0]
-                    mask, _ = clean_mask(probability, threshold, device=device, **cleanup)
-                    tube = render_tube(
-                        arrays["centerline_xy"][row], arrays["width_profile"][row], *frame.shape, window=tuple(arrays["crop"][row]), device=device
-                    )
-                    image = draw_residual(frame, mask, tube, arrays["centerline_xy"][row], residual_caption(index, arrays, row, mask))
-                    path = args.run / f"frame_{index:06d}_iou{float(arrays['iou'][row]):.3f}.png"
-                    image.save(path)
-                    print(f"wrote {path.name}", flush=True)
+                image = draw_residual(frame, mask, tube, arrays["centerline_xy"][row], residual_caption(index, arrays, row, mask))
+                path = args.run / f"frame_{index:06d}_iou{float(arrays['iou'][row]):.3f}.png"
+                image.save(path)
+                print(f"wrote {path.name}", flush=True)
     finally:
         source.close()
     return 0

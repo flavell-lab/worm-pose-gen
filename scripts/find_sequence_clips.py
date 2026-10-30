@@ -22,13 +22,12 @@ import json
 from pathlib import Path
 import time
 
-import h5py
 import numpy as np
 from PIL import Image, ImageDraw
 import torch
 
 from worm_pose_gen.flat_field import apply_flat_field
-from worm_pose_gen.recordings import DATASET_PATH, RecordingSource
+from worm_pose_gen.recordings import RecordingSource
 from worm_pose_gen.mask_fit import MaskFitConfig, init_from_skeleton
 from worm_pose_gen.pose_run import boundary, clean_mask, touches_border
 from worm_pose_gen.settings import CACHE_DIR, RUNS_DIR
@@ -73,40 +72,38 @@ def main() -> int:
     rows: list[dict] = []
     peaks: dict[int, np.ndarray] = {}
     try:
-        with h5py.File(args.recording, "r") as handle:
-            dataset = handle[DATASET_PATH]
-            total = int(dataset.shape[0])
-            stop = total if args.frames is None else min(total, args.start + args.frames)
-            indices = list(range(args.start, stop, args.stride))
-            unreadable = 0
-            for chunk_start in range(0, len(indices), args.batch_size):
-                chunk = indices[chunk_start : chunk_start + args.batch_size]
-                readable = []
-                for i in chunk:
-                    try:
-                        readable.append((i, np.asarray(dataset[i], dtype=np.uint8)))
-                    except OSError:
-                        # Some recordings hold chunks compressed with an HDF5 filter plugin that is not installed.
-                        unreadable += 1
-                if not readable:
-                    continue
-                chunk = [i for i, _ in readable]
-                raw = np.stack([frame for _, frame in readable])
-                corrected = np.stack([np.clip(np.rint(apply_flat_field(f, field, clip=(0.0, 255.0))), 0, 255).astype(np.uint8) for f in raw])
-                probability = module.predict_probability_batch(corrected, batch_size=args.batch_size)
-                for index, frame, prob in zip(chunk, corrected, probability, strict=True):
-                    mask, stats = clean_mask(prob, args.threshold, args.hole_radius, device)
-                    row = {"frame_index": int(index), **stats, "touches_border": False, "bbox_fill": float("nan"), "skeleton_px": float("nan")}
-                    if stats["worm_pixels"] >= args.min_worm_pixels:
-                        yy, xx = np.nonzero(mask)
-                        row["touches_border"] = touches_border(mask, 2)
-                        row["bbox_fill"] = float(mask.sum()) / float((yy.max() - yy.min() + 1) * (xx.max() - xx.min() + 1))
-                        skeleton = init_from_skeleton(mask, config=config)
-                        row["skeleton_px"] = float(skeleton.latent[17]) if skeleton is not None else float("nan")
-                    rows.append(row)
-                    peaks[int(index)] = np.stack((frame, boundary(mask).astype(np.uint8)))
-                if chunk_start % (args.batch_size * 20) == 0:
-                    print(f"{chunk[-1]}/{stop} frames scanned", flush=True)
+        total = source.frame_count
+        stop = total if args.frames is None else min(total, args.start + args.frames)
+        indices = list(range(args.start, stop, args.stride))
+        unreadable = 0
+        for chunk_start in range(0, len(indices), args.batch_size):
+            chunk = indices[chunk_start : chunk_start + args.batch_size]
+            readable = []
+            for i in chunk:
+                try:
+                    readable.append((i, source.read(i)))
+                except OSError:
+                    # Some recordings hold chunks compressed with an HDF5 filter plugin that is not installed.
+                    unreadable += 1
+            if not readable:
+                continue
+            chunk = [i for i, _ in readable]
+            raw = np.stack([frame for _, frame in readable])
+            corrected = np.stack([np.clip(np.rint(apply_flat_field(f, field, clip=(0.0, 255.0))), 0, 255).astype(np.uint8) for f in raw])
+            probability = module.predict_probability_batch(corrected, batch_size=args.batch_size)
+            for index, frame, prob in zip(chunk, corrected, probability, strict=True):
+                mask, stats = clean_mask(prob, args.threshold, args.hole_radius, device)
+                row = {"frame_index": int(index), **stats, "touches_border": False, "bbox_fill": float("nan"), "skeleton_px": float("nan")}
+                if stats["worm_pixels"] >= args.min_worm_pixels:
+                    yy, xx = np.nonzero(mask)
+                    row["touches_border"] = touches_border(mask, 2)
+                    row["bbox_fill"] = float(mask.sum()) / float((yy.max() - yy.min() + 1) * (xx.max() - xx.min() + 1))
+                    skeleton = init_from_skeleton(mask, config=config)
+                    row["skeleton_px"] = float(skeleton.latent[17]) if skeleton is not None else float("nan")
+                rows.append(row)
+                peaks[int(index)] = np.stack((frame, boundary(mask).astype(np.uint8)))
+            if chunk_start % (args.batch_size * 20) == 0:
+                print(f"{chunk[-1]}/{stop} frames scanned", flush=True)
     finally:
         source.close()
 

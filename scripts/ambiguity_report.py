@@ -18,11 +18,10 @@ import argparse
 import json
 from pathlib import Path
 
-import h5py
 import numpy as np
 
 from worm_pose_gen.ambiguity import FLAG_NAMES, AmbiguityThresholds, compute_ambiguity, summarize_ambiguity
-from worm_pose_gen.recordings import DATASET_PATH
+from worm_pose_gen.frame_reader import open_frames
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,9 +36,8 @@ def image_shape_of(summary: dict) -> tuple[int, int] | None:
     recording = Path(summary["recording"])
     if not recording.exists():
         return None
-    with h5py.File(recording, "r") as handle:
-        shape = handle[DATASET_PATH].shape
-    return int(shape[1]), int(shape[2])
+    with open_frames(recording) as frames:
+        return frames.shape
 
 
 def report_run(run: Path, max_listed: int) -> dict:
