@@ -44,6 +44,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from .. import edits, frame_search, library
+from ..frame_reader import open_frames
 from ..jobs import JobSpec
 from ..library.roots import locked, read_json, write_json
 from ..workspace import utc_now
@@ -253,12 +254,10 @@ def find_command(spec: dict[str, Any]) -> list[str]:
 
 
 def _frame_count(path: Path, dataset: str) -> int:
-    import h5py
-
     try:
-        with h5py.File(path, "r") as handle:
-            return int(handle[dataset].shape[0])
-    except (OSError, KeyError) as error:
+        with open_frames(path, dataset) as frames:
+            return frames.frame_count
+    except (OSError, KeyError, ValueError) as error:
         raise ValueError(f"{path.name} cannot be read: {error}") from error
 
 

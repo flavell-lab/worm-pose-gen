@@ -42,13 +42,17 @@ printed `ssh` command goes through the login node to the job's node, and
 running after the interactive job ends.
 
 **Recordings.** A recording folder is searched two levels deep for `.h5`
-recordings and `.avi` videos; each new file is checked in the background,
-and one that cannot be read says why (damaged on disk, or an HDF5
-compression plugin that is not installed). A video is converted to an HDF5
-recording when opened (about a minute per ten minutes of video). The
-Recordings screen lists a setup's recordings (a setup is a microscope; the
-lab's rigs are `NIR behaviour camera (flv rigs)`), analysed ones first, with
-their status.
+recordings and `.avi` and `.mp4` videos; each new file is checked in the
+background, and one that cannot be read says why (damaged on disk, or an
+HDF5 compression plugin that is not installed). A video is read in place
+(`frame_reader`, through PyAV): it is indexed once, the first time it is
+opened, and the index is cached in the data directory's `cache/video_index`
+(rebuilt when the file changes). A frame read out of order takes about
+2 ms in an MJPEG `.avi` but 50–300 ms in an H.264 `.mp4` with keyframes far
+apart, which decodes from the keyframe before it; reading H.264 forward runs
+at about 440 frames/s. The Recordings screen lists a setup's recordings (a
+setup is a microscope; the lab's rigs are `NIR behaviour camera (flv
+rigs)`), analysed ones first, with their status.
 
 **Workspace.** Four layers (keys 1–4): mask, midline (head a square, tail a
 circle), outline, and the A-P field from head to tail. At the bottom are the

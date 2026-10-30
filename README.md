@@ -89,7 +89,7 @@ first, with what is left to review, then the ones you have not.
 
 1. **Add your recordings.** The first time, press **Add a folder…** and
    choose the folder your recordings are in. The app finds every recording
-   in it and in the folders inside it. **Add recordings…** adds more later.
+   (`.h5`, `.avi` and `.mp4` files) in it and in the folders inside it. **Add recordings…** adds more later.
 2. **Open a recording** from the list.
 3. **Analyse.** Press **Analyse** and wait for the progress bars. It takes
    about a minute per thousand frames. You can close the browser and come

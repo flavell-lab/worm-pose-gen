@@ -3,7 +3,7 @@
 Semi-supervised training (:mod:`semi_supervised`) needs windows of a few
 consecutive frames, each with the ``MAX_LAG`` frames of context its
 difference channels read, from as many recordings as possible.  Reading them
-from the raw HDF5 files at training time is slow (NFS, chunked datasets), so
+from the raw recordings at training time is slow (NFS, chunked datasets), so
 a fixed sample of contiguous segments is flat-fielded once, exactly as the
 pipeline does it (:meth:`pipeline.Frames.corrected`), and kept as uint8
 arrays:
@@ -33,6 +33,7 @@ from typing import Callable, Iterable, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
+from .frame_reader import open_frames
 from .temporal_context import MAX_LAG
 
 
@@ -118,16 +119,11 @@ def _write_segment(segment: Segment, root: str, dataset: str) -> tuple[Segment, 
 def frame_count(path: str, dataset: str) -> int | None:
     """The recording's frame count, or ``None`` when it cannot be opened."""
 
-    import h5py
-
     try:
-        with h5py.File(path, "r") as handle:
-            data = handle[dataset]
-            if data.ndim != 3:
-                return None
-            # A corrupted file can open and still fail on its first chunk.
-            np.asarray(data[0])
-            return int(data.shape[0])
+        with open_frames(path, dataset) as frames:
+            # A corrupted file can open and still fail on its first frame.
+            frames[0]
+            return frames.frame_count
     except (OSError, KeyError, ValueError):
         return None
 

@@ -21,7 +21,6 @@ import time
 from worm_pose_gen import library
 from worm_pose_gen.model_eval import add_library_arguments, libraries_from
 from worm_pose_gen.recordings import find_recordings
-from worm_pose_gen.videos import is_video
 from worm_pose_gen.settings import CACHE_DIR
 from worm_pose_gen.unlabeled_clips import build_store
 
@@ -42,7 +41,7 @@ def main() -> int:
     setup = library.get_setup(libraries, args.setup)
     dataset = library.Dataset(libraries, args.dataset)
     held_out = sorted(name for name, split in dataset.splits().items() if split in ("val", "test"))
-    recordings = [str(p) for p in find_recordings(library.recording_sources(libraries, args.setup)) if not is_video(p)]
+    recordings = [str(p) for p in find_recordings(library.recording_sources(libraries, args.setup))]
     print(f"{len(recordings)} recording files; leaving out {held_out}", flush=True)
     written = build_store(
         args.output, recordings, per_recording=args.per_recording, length=args.length, seed=args.seed,

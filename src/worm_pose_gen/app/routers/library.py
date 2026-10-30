@@ -99,7 +99,7 @@ def set_default(ref: str, payload: dict[str, Any] = Body(...), app: AppState = D
 
 @router.get("/setups/{ref}/recordings")
 def setup_recordings(ref: str, app: AppState = Depends(get_state)) -> dict[str, Any]:
-    """The HDF5 recordings in the setup's folders and those registered to it, with frame counts and readability (videos are left out until converted)."""
+    """The recordings in the setup's folders and those registered to it, with frame counts and readability."""
 
     libraries = _libraries(app)
     with _found():
@@ -110,8 +110,6 @@ def setup_recordings(ref: str, app: AppState = Depends(get_state)) -> dict[str, 
     rows = []
     for info in infos:
         owner = registered.get(info.path, {}).get("setup")
-        if info.video:
-            continue
         if owner is None or owner == ref:  # a file in the folders registered to another setup belongs there
             rows.append({**info.to_dict(), "id": library.recording_id(info.path), "registered": info.path in registered})
     return {"setup": ref, "recordings": rows}

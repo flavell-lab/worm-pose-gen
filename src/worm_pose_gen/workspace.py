@@ -39,15 +39,14 @@ import threading
 import time as time_module
 from typing import Any, Sequence
 
-import h5py
 import numpy as np
 from numpy.typing import NDArray
 
+from .frame_reader import DATASET_PATH, open_frames
 from .settings import WORKSPACES_DIR
 
 
 DEFAULT_WORKSPACES_ROOT = WORKSPACES_DIR
-RECORDING_DATASET = "/img_nir"
 MASK_CHUNK_ROWS = 1024
 HYPOTHESIS_PREFIXES = ("hypotheses_", "path_", "prediction_")
 ALGORITHM_DTYPE = "<U32"
@@ -84,20 +83,17 @@ def _load_npz(path: Path) -> dict[str, np.ndarray]:
         return {name: archive[name] for name in archive.files}
 
 
-def read_recording_shape(recording: Path, dataset: str = RECORDING_DATASET) -> tuple[int, int, int] | None:
+def read_recording_shape(recording: Path, dataset: str = DATASET_PATH) -> tuple[int, int, int] | None:
     """``(T, H, W)`` of a recording, ``None`` when it cannot be read."""
 
     try:
-        with h5py.File(recording, "r") as handle:
-            shape = handle[dataset].shape
-    except (OSError, KeyError):
+        with open_frames(recording, dataset) as frames:
+            return frames.frame_count, *frames.shape
+    except (OSError, KeyError, ValueError):
         return None
-    if len(shape) != 3:
-        return None
-    return int(shape[0]), int(shape[1]), int(shape[2])
 
 
-def read_image_shape(recording: Path, dataset: str = RECORDING_DATASET) -> tuple[int, int] | None:
+def read_image_shape(recording: Path, dataset: str = DATASET_PATH) -> tuple[int, int] | None:
     """``(H, W)`` of a recording's frames, ``None`` when it cannot be read."""
 
     shape = read_recording_shape(recording, dataset)
@@ -235,7 +231,7 @@ class Workspace:
         if path.exists():
             raise FileExistsError(f"workspace {path} already exists")
         frame_index = _frame_range(first, last, step)
-        recording_shape = read_recording_shape(Path(recording), str((settings or {}).get("dataset") or RECORDING_DATASET))
+        recording_shape = read_recording_shape(Path(recording), str((settings or {}).get("dataset") or DATASET_PATH))
         if recording_shape is not None and int(frame_index[-1]) >= recording_shape[0]:
             raise ValueError(f"frame {int(frame_index[-1])} is beyond the {recording_shape[0]} frames of {recording}")
         shape = None if recording_shape is None else recording_shape[1:]
@@ -279,7 +275,7 @@ class Workspace:
         """``(H, W)`` of the recording's frames, read once and cached in ``workspace.json``."""
 
         if self.info.image_shape is None:
-            shape = read_image_shape(self.recording, str(self.info.settings.get("dataset") or RECORDING_DATASET))
+            shape = read_image_shape(self.recording, str(self.info.settings.get("dataset") or DATASET_PATH))
             if shape is None:
                 return None
             self.info.image_shape = [shape[0], shape[1]]

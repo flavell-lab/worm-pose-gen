@@ -23,6 +23,6 @@ files_router = APIRouter(prefix="/api/files")
 
 @files_router.get("")
 def browse(path: str | None = None, all: str | None = None, app: AppState = Depends(get_state)) -> dict[str, Any]:
-    """The file explorer: directories and HDF5 files under ``path`` (every file with ``all=1``)."""
+    """The file explorer: directories, HDF5 files and videos under ``path`` (every file with ``all=1``)."""
 
     return app.browse(path, query_flag(all))

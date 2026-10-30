@@ -9,7 +9,9 @@ process is the same ``pipeline --stages`` an app on a GPU starts.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
+import io
 import json
 from pathlib import Path
 import sys
@@ -20,8 +22,9 @@ from unittest import mock
 
 import numpy as np
 from fastapi.testclient import TestClient
+from PIL import Image
 
-from worm_pose_gen import edits, fixes, library, pipeline
+from worm_pose_gen import edits, fixes, frame_reader, library, pipeline
 from worm_pose_gen.app import AppConfig, analysis, create_app
 from worm_pose_gen.jobs import JobRecord, JobSpec
 from worm_pose_gen.library import Libraries
@@ -29,6 +32,7 @@ from worm_pose_gen.library import Libraries
 from tests.slow import slow
 from tests.test_fixes import posed_workspace
 from tests.test_fixes_api import _cpu_fix_command
+from tests.test_frame_reader import FRAMES as VIDEO_FRAMES, HEIGHT as VIDEO_HEIGHT, WIDTH as VIDEO_WIDTH, _decoded_index, _write_video
 from tests.test_pipeline import FIT_PARAMS, FRAMES, SEGMENT_PARAMS, _write_recording
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -79,7 +83,10 @@ class WorkspacePageTests(unittest.TestCase):
         )
         cls.client = TestClient(create_app(config), raise_server_exceptions=False)
         cls.client.__enter__()
-        patches = (mock.patch.object(analysis, "analysis_params", cpu_analysis_params), mock.patch.object(analysis, "analysis_command", cpu_analysis_command))
+        patches = (
+            mock.patch.object(analysis, "analysis_params", cpu_analysis_params), mock.patch.object(analysis, "analysis_command", cpu_analysis_command),
+            mock.patch.object(frame_reader, "INDEX_DIR", root / "cache" / "video_index"),
+        )
         for patch in patches:
             patch.start()
             cls.addClassCleanup(patch.stop)
@@ -121,6 +128,19 @@ class WorkspacePageTests(unittest.TestCase):
         self.assertEqual((first["pending"], first["frames"], first["readable"]), (True, None, False))
         row = next(r for r in self.home_when_checked()["recordings"] if r["id"] == "2026-01-02-09")
         self.assertEqual((row["pending"], row["frames"], row["readable"]), (False, FRAMES, True))
+
+    def test_an_mp4_is_listed_opened_and_read_in_place(self) -> None:
+        video = self.recording.with_name("2026-01-02-05.mp4")
+        _write_video(video, "libx264")
+        row = next(r for r in self.home_when_checked()["recordings"] if r["id"] == "2026-01-02-05")
+        self.assertEqual((row["path"], row["frames"], row["readable"]), (str(video), VIDEO_FRAMES, True))
+        name = self.call("POST", "/api/recordings/open", {"path": str(video)})["workspace"]
+        workspace = self.call("GET", f"/api/workspaces/{name}")
+        self.assertEqual((workspace["recording"], workspace["frame_count"], workspace["image_shape"]), (str(video), VIDEO_FRAMES, [VIDEO_HEIGHT, VIDEO_WIDTH]))
+        for frame in (37, 7):
+            payload = self.call("GET", f"/api/workspaces/{name}/frame?frame={frame}&raw=1")
+            image = Image.open(io.BytesIO(base64.b64decode(payload["image_raw"].split(",", 1)[1])))
+            self.assertEqual(_decoded_index(np.asarray(image.convert("L"))), frame)
 
     @slow
     def test_analyse_a_recording_end_to_end(self) -> None:
