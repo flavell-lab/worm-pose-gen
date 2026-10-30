@@ -173,6 +173,8 @@ class VideoIndex:
 
         timestamps, keyframes = [], []
         with av.open(str(path)) as container:
+            if not container.streams.video:
+                raise ValueError(f"{path}: no video stream")
             stream = container.streams.video[0]
             for packet in container.demux(stream):
                 if packet.size == 0:  # the flush packet at the end, or an empty (dropped) frame

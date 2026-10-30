@@ -201,6 +201,18 @@ class VideoFramesTests(unittest.TestCase):
                 open_frames(path).close()
                 self.assertEqual(built.call_count, 3)
 
+    def test_a_file_without_a_video_stream_is_a_value_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            path = Path(directory) / "sound.mp4"
+            with av.open(str(path), "w") as container:
+                stream = container.add_stream("aac", rate=8000)
+                frame = av.AudioFrame.from_ndarray(np.zeros((1, 1024), dtype=np.float32), format="fltp", layout="mono")
+                frame.sample_rate = 8000
+                for packet in [*stream.encode(frame), *stream.encode(None)]:
+                    container.mux(packet)
+            with self.assertRaisesRegex(ValueError, "no video stream"):
+                open_frames(path)
+
 
 class Hdf5FramesTests(unittest.TestCase):
     def test_reads_match_h5py(self) -> None:
