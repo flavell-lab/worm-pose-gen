@@ -203,13 +203,12 @@ class VideoFramesTests(unittest.TestCase):
 
     def test_a_file_without_a_video_stream_is_a_value_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
-            path = Path(directory) / "sound.mp4"
+            path = Path(directory) / "audio.avi"
             with av.open(str(path), "w") as container:
-                stream = container.add_stream("aac", rate=8000)
-                frame = av.AudioFrame.from_ndarray(np.zeros((1, 1024), dtype=np.float32), format="fltp", layout="mono")
-                frame.sample_rate = 8000
-                for packet in [*stream.encode(frame), *stream.encode(None)]:
-                    container.mux(packet)
+                stream = container.add_stream("pcm_s16le", rate=8000, layout="mono")
+                packet = av.Packet(bytes(1600))
+                packet.stream, packet.pts, packet.dts = stream, 0, 0
+                container.mux(packet)
             with self.assertRaisesRegex(ValueError, "no video stream"):
                 open_frames(path)
 
