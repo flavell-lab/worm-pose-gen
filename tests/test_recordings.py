@@ -7,11 +7,15 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 import h5py
 import numpy as np
 from PIL import Image
 
+from tests.test_frame_reader import FRAMES as VIDEO_FRAMES, HEIGHT as VIDEO_HEIGHT, WIDTH as VIDEO_WIDTH, _write_video
+from worm_pose_gen import frame_reader
+from worm_pose_gen.frame_reader import open_frames
 from worm_pose_gen.recordings import (
     RecordingInfo,
     RecordingProber,
@@ -50,6 +54,9 @@ class RecordingsFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._directory = tempfile.TemporaryDirectory()
         self.root = Path(self._directory.name)
+        index_dir = mock.patch.object(frame_reader, "INDEX_DIR", self.root / "video_index")
+        index_dir.start()
+        self.addCleanup(index_dir.stop)
         self.data = self.root / "data"
         self.rec_a = self.data / "2024-01-31" / "2024-01-31-02.h5"
         self.rec_b = self.data / "2024-05-28" / "2024-05-28-02.h5"
@@ -72,37 +79,38 @@ class ListRecordingsTests(RecordingsFixture):
         found = find_recordings([self.data, self.root / "missing"])
         self.assertEqual([p.name for p in found], ["2023-03-30-01.h5", "2024-01-31-02.h5", "2024-05-28-02.h5"])
 
-    def test_searches_two_folders_deep_and_lists_videos_unopened(self) -> None:
+    def test_searches_two_folders_deep_skipping_hidden_folders(self) -> None:
         deep = self.data / "2024-01-31" / "day" / "2024-01-31-07.h5"
-        too_deep = self.data / "2024-01-31" / "day" / "more" / "2024-01-31-08.h5"
-        video = self.data / "2024-01-31" / "worm004.avi"
-        for path in (deep, too_deep, video):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"x")
-        names = [p.name for p in find_recordings([self.data])]
-        self.assertIn("2024-01-31-07.h5", names)
-        self.assertNotIn("2024-01-31-08.h5", names)
-        info = {i.name: i for i in self.listing()}["worm004"]
-        self.assertTrue(info.video)
-        self.assertTrue(info.readable)
-        self.assertIsNone(info.frames)
-
-    def test_searches_two_folders_deep_and_lists_videos_without_opening_them(self) -> None:
-        deep = self.data / "a" / "b" / "c" / "too-deep.h5"
-        _write_recording(deep)
-        video = self.data / "2024-01-31" / "worm004.avi"
-        video.write_bytes(b"not decoded when listed")
+        too_deep = self.data / "a" / "b" / "c" / "too-deep.h5"
         hidden = self.data / ".trash" / "old.h5"
-        _write_garbage(hidden)
+        for path in (deep, too_deep, hidden):
+            _write_garbage(path)
         found = [p.name for p in find_recordings([self.data])]
+        self.assertIn("2024-01-31-07.h5", found)
         self.assertNotIn("too-deep.h5", found)
         self.assertNotIn("old.h5", found)
-        self.assertIn("worm004.avi", found)
         self.assertIn("too-deep.h5", [p.name for p in find_recordings([self.data / "a"])])
-        info = {i.name: i for i in self.listing()}["worm004"]
-        self.assertTrue(info.video)
-        self.assertTrue(info.readable)
-        self.assertIsNone(info.frames)
+
+    def test_videos_are_probed_like_hdf5_recordings(self) -> None:
+        _write_video(self.data / "2024-01-31" / "worm004.avi", "mjpeg")
+        _write_video(self.data / "2024-01-31" / "worm005.MP4", "libx264")
+        (self.data / "2024-01-31" / "damaged.avi").write_bytes(b"not a video" * 64)
+        cache = self.root / "index.json"
+        pending = {i.name: i for i in list_recordings([self.data], cache=cache, probe=False)}
+        self.assertTrue(pending["worm005"].pending)
+        prober = RecordingProber(cache)
+        prober.submit((Path(info.path), info.dataset) for info in pending.values() if info.pending)
+        prober._thread.join(timeout=30)
+        listed = {i.name: i for i in list_recordings([self.data], cache=cache, probe=False)}
+        for name in ("worm004", "worm005"):
+            info = listed[name]
+            self.assertEqual((info.frames, info.height, info.width, info.readable, info.pending), (VIDEO_FRAMES, VIDEO_HEIGHT, VIDEO_WIDTH, True, False))
+        self.assertFalse(listed["damaged"].readable)
+        self.assertTrue(listed["damaged"].error)
+        video = self.data / "2024-01-31" / "worm005.MP4"
+        thumbnail = np.asarray(Image.open(io.BytesIO(thumbnail_png(video, 7, scale=1.0, dataset_root=self.root / "none"))))
+        with open_frames(video) as frames:
+            np.testing.assert_array_equal(thumbnail, frames[7])
 
     def test_without_probing_new_files_are_pending_until_a_prober_saves_them(self) -> None:
         cache = self.root / "index.json"

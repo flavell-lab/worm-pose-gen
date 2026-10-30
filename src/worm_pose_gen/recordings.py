@@ -1,15 +1,16 @@
-"""The HDF5 recordings: catalog, frame thumbnails, and frames read and flat-fielded.
+"""The recordings (HDF5 files and videos): catalog, frame thumbnails, and frames read and flat-fielded.
 
-The Recordings screen and Labeling's New queue need, for every ``.h5`` file
-of a setup (in its recording folders or registered to it), its frame count and image
-size and whether it can actually be read (some recordings hold chunks
-compressed with an HDF5 filter plugin that is not installed, and a few
-files are not HDF5 at all).  Opening every file to read its shape is slow
-over network storage, so the per-file facts are cached in one JSON index
-keyed by path; an entry is reused while the file's size and modification
-time are unchanged and refreshed otherwise.  Thumbnails are flat-fielded
-when the field cache holds the recording's field and are otherwise the raw
-frame.
+The Recordings screen and Labeling's New queue need, for every recording
+(``.h5``, ``.avi`` or ``.mp4``) of a setup (in its recording folders or
+registered to it), its frame count and image size and whether it can
+actually be read (some recordings hold chunks compressed with an HDF5
+filter plugin that is not installed, and a few files are not HDF5 at all).
+Opening every file to read its shape is slow over network storage (and a
+video is indexed when first opened, :mod:`.frame_reader`), so the per-file
+facts are cached in one JSON index keyed by path; an entry is reused while
+the file's size and modification time are unchanged and refreshed
+otherwise.  Thumbnails are flat-fielded when the field cache holds the
+recording's field and are otherwise the raw frame.
 
 ``RecordingSource`` reads one recording's frames (an HDF5 recording or a
 video, through :func:`.frame_reader.open_frames`) and flat-fields
@@ -41,7 +42,6 @@ from .settings import CACHE_DIR
 
 CACHE_VERSION = 1
 FLAT_FIELD_SAMPLE_COUNT = 64
-VIDEO_FACTS = {"frames": None, "height": None, "width": None, "readable": True, "error": None}
 PENDING_FACTS = {"frames": None, "height": None, "width": None, "readable": False, "error": None}
 # One app process writes the index from several threads (listings and the prober).
 _INDEX_LOCK = threading.Lock()
@@ -60,10 +60,8 @@ class RecordingInfo:
     modified_at: str
     readable: bool
     error: str | None
-    # The HDF5 dataset holding the frames.
+    # The HDF5 dataset holding the frames (ignored for a video).
     dataset: str = DATASET_PATH
-    # A video (``.avi``), converted to an HDF5 recording when it is first opened.
-    video: bool = False
     # Not opened yet: frames and readability are unknown until a prober has looked.
     pending: bool = False
 
@@ -72,7 +70,7 @@ class RecordingInfo:
 
 
 def list_directory(path: Path, *, all_files: bool = False) -> dict[str, Any]:
-    """Directories, HDF5 files (kind "h5") and convertible videos (kind "video") directly under ``path``, for the file explorer.
+    """Directories, HDF5 files (kind "h5") and videos (kind "video") directly under ``path``, for the file explorer.
 
     Hidden entries are skipped; unreadable subdirectories are listed but
     flagged.  With ``all_files`` every other regular file is listed too
@@ -125,25 +123,22 @@ def probe_frames(frame_count: int) -> tuple[int, ...]:
 
 
 def probe_recording(path: Path, dataset: str = DATASET_PATH) -> dict[str, Any]:
-    """Shape and readability of one file: open it, read the dataset shape, then a few frames.
+    """Shape and readability of one file: open it (indexing a video), read its shape, then a few frames.
 
     Reading frames is what tells an installed-filter recording from one whose
-    chunks need a plugin we do not have; the shape alone reads fine for both.
+    chunks need a plugin we do not have, and a damaged video from a whole
+    one; the shape alone reads fine for both.
     """
 
     facts: dict[str, Any] = {"frames": None, "height": None, "width": None, "readable": False, "error": None}
     try:
-        with h5py.File(path, "r") as handle:
-            if dataset not in handle:
-                raise KeyError(f"no dataset {dataset}")
-            data = handle[dataset]
-            if data.ndim != 3:
-                raise ValueError(f"expected a [T,H,W] dataset, got shape {tuple(data.shape)}")
-            facts["frames"], facts["height"], facts["width"] = (int(v) for v in data.shape)
-            for frame in probe_frames(facts["frames"]):
+        with open_frames(path, dataset) as frames:
+            facts["frames"] = frames.frame_count
+            facts["height"], facts["width"] = frames.shape
+            for frame in probe_frames(frames.frame_count):
                 try:
-                    np.asarray(data[frame])
-                except OSError as error:
+                    frames[frame]
+                except (OSError, ValueError) as error:
                     raise OSError(f"frame {frame} not readable: {error}") from error
             facts["readable"] = True
     except Exception as error:  # noqa: BLE001 - any failure makes the file unreadable, and we want its message
@@ -216,7 +211,8 @@ class RecordingProber:
     """Probes recordings in a background thread, so a listing does not wait for them.
 
     Probing opens each file and reads three frames, which over network
-    storage takes about a second per recording (longer for a damaged one), so
+    storage takes about a second per recording (longer for a damaged one,
+    and for a video, which is indexed on its first opening), so
     a folder of a hundred recordings would hold the Recordings screen for
     minutes.  The screen lists the files at once (:func:`list_recordings`
     with ``probe=False``), hands the unprobed ones here and polls; each
@@ -283,18 +279,16 @@ def list_recordings(roots: Iterable[Path], *, cache: Path | None = None, dataset
     """Catalog the recordings under ``roots`` (directories, or recording files themselves), reusing ``cache`` for unchanged files.
 
     ``dataset`` is the HDF5 dataset holding the frames (a setup's video dataset).
-    A video is listed without opening it: it is read once it is converted.
     With ``probe=False`` a file the cache has no current facts for is not
-    opened either but listed as ``pending`` (for :class:`RecordingProber`).
+    opened but listed as ``pending`` (for :class:`RecordingProber`).
     """
 
     index = RecordingIndex(cache)
     infos = []
     for path in find_recordings(roots):
-        video = _file_kind(path.suffix.lower()) == "video"
         try:
             stamp = _file_stamp(path)
-            entry = VIDEO_FACTS if video else index.facts(path, dataset) if probe else (index.cached(path, dataset) or PENDING_FACTS)
+            entry = index.facts(path, dataset) if probe else (index.cached(path, dataset) or PENDING_FACTS)
         except OSError as error:
             # Vanished or unstat-able between listing and probing: report it rather than drop it.
             entry = {"frames": None, "height": None, "width": None, "readable": False, "error": f"{type(error).__name__}: {error}"}
@@ -303,7 +297,7 @@ def list_recordings(roots: Iterable[Path], *, cache: Path | None = None, dataset
             RecordingInfo(
                 name=path.stem, path=str(path), frames=entry["frames"], height=entry["height"], width=entry["width"],
                 size_bytes=int(stamp["size"]), modified_at=_iso_utc(stamp["mtime_ns"] / 1e9), readable=bool(entry["readable"]),
-                error=entry["error"], dataset=dataset, video=video, pending=entry is PENDING_FACTS,
+                error=entry["error"], dataset=dataset, pending=entry is PENDING_FACTS,
             )
         )
     index.save()
@@ -311,6 +305,10 @@ def list_recordings(roots: Iterable[Path], *, cache: Path | None = None, dataset
 
 
 def _read_frame(path: Path, frame: int, dataset: str = DATASET_PATH) -> NDArray[np.uint8]:
+    if path.suffix.lower() not in HDF5_SUFFIXES:
+        with open_frames(path) as frames:
+            return frames[frame]
+    # An HDF5 frame is read raw (open_frames casts to uint8), so a 16-bit camera's can be rescaled below.
     with h5py.File(path, "r") as handle:
         if dataset not in handle:
             raise KeyError(f"no dataset {dataset}")

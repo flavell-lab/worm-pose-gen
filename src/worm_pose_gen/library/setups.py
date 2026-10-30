@@ -17,17 +17,13 @@ made it, when, and why, as the promotion log did.
 
 Recordings are the user's, not the setup's: the personal
 ``recording_folders.json`` names folders, each for one setup, that are
-searched for recordings (``.h5`` and ``.avi`` files at most two folders
-deep), and the personal ``recordings.json`` names single files added by
-hand.  A recording belongs to the setup it is registered to, else to the
-setup of the folder holding it.  A recording's id is its file name without
+searched for recordings (``.h5``, ``.avi`` and ``.mp4`` files at most two
+folders deep), and the personal ``recordings.json`` names single files
+added by hand.  A recording belongs to the setup it is registered to, else
+to the setup of the folder holding it.  A recording's id is its file name without
 the extension (``2023-06-23-01``): the lab's acquisition names files by date
 and index, so the stem is unique within a setup and survives the file being
 mirrored to another store.
-
-A video added by hand in another container (``.avi``) is converted once to
-an HDF5 recording ``videos/<id>.h5`` in the personal library, with the
-frames in the setup's dataset, and that file is what gets registered.
 """
 
 from __future__ import annotations
@@ -42,7 +38,6 @@ from typing import Any
 from .roots import (
     Libraries, append_jsonl, check_id, locked, make_ref, parse_ref, read_json, read_jsonl, write_json,
 )
-from ..videos import convert_video, is_video
 from ..workspace import utc_now
 
 
@@ -50,7 +45,6 @@ SETUPS_DIR = "setups"
 DEFAULTS_LOG = "defaults_log.jsonl"
 RECORDINGS_FILE = "recordings.json"
 FOLDERS_FILE = "recording_folders.json"
-VIDEOS_DIR = "videos"
 # What a model must output to fill each default role.
 ROLE_OUTPUTS = {"mask": ("mask",), "body": ("ap", "head", "tail")}
 DEFAULT_VIDEO = {"dataset_path": "/img_nir", "flat_field": True}
@@ -210,37 +204,17 @@ def registered_recordings(libraries: Libraries) -> dict[str, dict[str, Any]]:
 
 
 def register_recording(libraries: Libraries, path: str | Path, setup_ref: str) -> dict[str, Any]:
-    """Assign a recording outside the setup's folders (or move it to another setup) in the personal library.
+    """Assign a recording outside the setup's folders (or move it to another setup) in the personal library."""
 
-    A video (``.avi``) is converted first, unless its converted recording exists already.
-    """
-
-    setup = get_setup(libraries, setup_ref)
+    get_setup(libraries, setup_ref)
     resolved = str(Path(path).expanduser().resolve())
     if not Path(resolved).is_file():
         raise FileNotFoundError(f"{resolved} is not a file")
-    if is_video(resolved):
-        resolved = str(converted_recording(libraries, resolved, setup).resolve())
     with locked(libraries.personal):
         registry = registered_recordings(libraries)
         registry[resolved] = {"setup": setup_ref, "registered_at": utc_now()}
         write_json(libraries.personal / RECORDINGS_FILE, registry)
     return {"id": recording_id(resolved), "path": resolved, "setup": setup_ref}
-
-
-def converted_path(libraries: Libraries, video: str | Path) -> Path:
-    """Where a video's converted HDF5 recording goes in the personal library."""
-
-    return libraries.personal / VIDEOS_DIR / f"{recording_id(video)}.h5"
-
-
-def converted_recording(libraries: Libraries, video: str | Path, setup: Setup) -> Path:
-    """A video's HDF5 recording, converted now unless it was before (about a minute per ten minutes of video)."""
-
-    converted = converted_path(libraries, video)
-    if not converted.is_file():
-        convert_video(Path(video), converted, str(setup.video["dataset_path"]))
-    return converted
 
 
 def recording_folders(libraries: Libraries) -> dict[str, dict[str, Any]]:
@@ -264,7 +238,7 @@ def add_recording_folder(libraries: Libraries, path: str | Path, setup_ref: str)
 
 
 def remove_recording_folder(libraries: Libraries, path: str | Path) -> None:
-    """Stop searching a folder; its workspaces, labels and converted videos stay."""
+    """Stop searching a folder; its workspaces and labels stay."""
 
     with locked(libraries.personal):
         folders = recording_folders(libraries)

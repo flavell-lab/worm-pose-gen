@@ -5,8 +5,7 @@ the setup names the default model of each role (``mask``: the segmenter
 whose masks the pipeline fits; ``body``: the body-field network that scores
 the fits and gives the A-P field).  **Opening** a recording makes its
 workspace if it has none (always the whole recording; a developer may give
-a range) and starts nothing; the analysis starts from the workspace.  A
-video (``.avi``) is converted to an HDF5 recording when it is first opened.
+a range) and starts nothing; the analysis starts from the workspace.
 **Analyse** takes the setup's models, or the ones the user picked instead,
 and where the masks come from (``mask_source``: the mask model, or the body
 model's own mask output, which then needs no mask model; the default is the
@@ -58,7 +57,6 @@ from ..jobs import FINISHED_STATES, JobRecord, JobSpec
 from .images import data_url
 from ..library.setups import ROLE_OUTPUTS
 from ..recordings import RecordingInfo, list_recordings
-from ..videos import is_video
 from ..workspace import Workspace, _write_json_atomic, list_workspaces, utc_now
 from .exporting import list_exports
 from .inspection import cached_issue_summary
@@ -225,9 +223,6 @@ def open_recording(app: AppState, payload: dict[str, Any]) -> str:
     """The workspace of the recording at ``payload["path"]``, made when it has none (``first``, ``last`` and ``step`` are a developer's range for a new one)."""
 
     recording = app.recording_path(str(payload.get("path") or ""))
-    if is_video(recording):
-        setup = library.setup_for_recording(app.libraries, recording)
-        recording = Path(library.register_recording(app.libraries, recording, setup)["path"])
     name = app.workspace_of_recording(recording)
     if name is None:
         name = app.create_workspace({key: payload.get(key) for key in ("first", "last", "step")} | {"recording": str(recording)}).name
@@ -446,7 +441,7 @@ def home(app: AppState, setup_ref: str | None) -> dict[str, Any]:
         name = workspaces.get(str(Path(info.path).resolve()))
         rows.append({
             "id": library.recording_id(info.path), "path": info.path, "frames": info.frames, "readable": info.readable, "error": info.error,
-            "video": info.video, "pending": info.pending,
+            "pending": info.pending,
             "workspace": name, "status": None if name is None else status(app, name, jobs, opened),
         })
     payload["recordings"] = rows
@@ -456,8 +451,7 @@ def home(app: AppState, setup_ref: str | None) -> dict[str, Any]:
 def library_recordings(app: AppState, setup: library.Setup, probe: bool = True) -> list[RecordingInfo]:
     """The setup's recordings (in its folders or registered to it, not registered to another setup).
 
-    A video converted before is listed as its HDF5 recording only.  With
-    ``probe=False`` files not probed yet are listed as pending
+    With ``probe=False`` files not probed yet are listed as pending
     (:func:`recordings.list_recordings`).
     """
 
@@ -466,9 +460,7 @@ def library_recordings(app: AppState, setup: library.Setup, probe: bool = True) 
         library.recording_sources(libraries, setup.ref), cache=app.config.recordings_cache, dataset=str(setup.video["dataset_path"]), probe=probe,
     )
     registered = library.setups.registered_recordings(libraries)
-    infos = [info for info in infos if registered.get(info.path, {}).get("setup") in (None, setup.ref)]
-    converted = {info.name for info in infos if not info.video}
-    return [info for info in infos if not (info.video and info.name in converted)]
+    return [info for info in infos if registered.get(info.path, {}).get("setup") in (None, setup.ref)]
 
 
 # ---------------------------------------------------------------------------

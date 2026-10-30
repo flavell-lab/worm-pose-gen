@@ -208,13 +208,13 @@ class AppState:
         return resolved
 
     def recording_dataset(self, path: Path) -> str:
-        """The HDF5 dataset of a recording's frames: its setup's video dataset."""
+        """The HDF5 dataset of a recording's frames: its setup's video dataset (ignored for a video)."""
 
         setup = library.setup_for_recording(self.libraries, path)
         return str(library.get_setup(self.libraries, setup).video["dataset_path"]) if setup is not None else DATASET_PATH
 
     def browse(self, path: str | None, all_files: bool = False) -> dict[str, Any]:
-        """Directories and HDF5 files under ``path`` (the first recording folder when none is given), with the recording folders as shortcuts."""
+        """Directories, HDF5 files and videos under ``path`` (the first recording folder when none is given), with the recording folders as shortcuts."""
 
         roots = [root for root in map(Path, library.recording_folders(self.libraries)) if root.is_dir()]
         start = Path(path).expanduser() if path else (roots[0] if roots else Path.home())

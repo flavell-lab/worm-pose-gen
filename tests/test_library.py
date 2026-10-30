@@ -5,14 +5,18 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
-from worm_pose_gen import library
+from tests.test_frame_reader import FRAMES as VIDEO_FRAMES, HEIGHT as VIDEO_HEIGHT, WIDTH as VIDEO_WIDTH, _write_video
+from worm_pose_gen import frame_reader, library
+from worm_pose_gen.frame_reader import open_frames
 from worm_pose_gen.library import Libraries
 from worm_pose_gen.library import Collection, roots
 from worm_pose_gen.library.datasets import Dataset
 from worm_pose_gen.library.roots import LAB_LIBRARY_ENGAGING, LAB_LIBRARY_FLV, default_lab_root, parse_ref, ref_filename, write_json
+from worm_pose_gen.recordings import find_recordings
 from worm_pose_gen.settings import LIBRARY_DIR
 
 
@@ -173,28 +177,16 @@ class SetupTests(unittest.TestCase):
         stray.write_bytes(b"")
         self.assertIsNone(library.setup_for_recording(self.libraries, stray))
 
-    def test_a_video_is_registered_as_its_converted_recording(self):
-        import h5py
-        import imageio_ffmpeg
-
+    def test_a_video_is_registered_as_itself_and_opens(self):
         video = self.root / "elsewhere" / "worm004.avi"
         video.parent.mkdir(parents=True)
-        frames = [np.full((48, 64), 40 * k, dtype=np.uint8) for k in range(5)]
-        writer = imageio_ffmpeg.write_frames(str(video), (64, 48), pix_fmt_in="gray", pix_fmt_out="yuvj420p", fps=20.0, codec="mjpeg", quality=10)
-        writer.send(None)
-        for frame in frames:
-            writer.send(frame.tobytes())
-        writer.close()
+        _write_video(video, "mjpeg")
         entry = library.register_recording(self.libraries, video, "lab:nir")
-        converted = self.libraries.personal / "videos" / "worm004.h5"
-        self.assertEqual(entry, {"id": "worm004", "path": str(converted.resolve()), "setup": "lab:nir"})
-        self.assertEqual(library.setup_for_recording(self.libraries, converted), "lab:nir")
-        with h5py.File(converted, "r") as handle:
-            data = handle["/img_nir"]
-            self.assertEqual((data.shape, data.dtype, data.chunks), ((5, 48, 64), np.uint8, (1, 48, 64)))
-            self.assertEqual((data.attrs["source_video"], data.attrs["fps"]), (str(video.resolve()), 20.0))
-            np.testing.assert_allclose(data[:].mean(axis=(1, 2)), [f.mean() for f in frames], atol=3)
-        self.assertEqual(list(converted.parent.iterdir()), [converted])
+        self.assertEqual(entry, {"id": "worm004", "path": str(video.resolve()), "setup": "lab:nir"})
+        self.assertEqual(library.setup_for_recording(self.libraries, video), "lab:nir")
+        self.assertEqual(find_recordings(library.recording_sources(self.libraries, "lab:nir")), [video.resolve()])
+        with mock.patch.object(frame_reader, "INDEX_DIR", self.root / "video_index"), open_frames(video) as frames:
+            self.assertEqual((frames.frame_count, frames.shape), (VIDEO_FRAMES, (VIDEO_HEIGHT, VIDEO_WIDTH)))
 
 
 class CollectionTests(unittest.TestCase):

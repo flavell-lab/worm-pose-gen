@@ -69,7 +69,6 @@ from pathlib import Path
 import time
 from typing import Any, Callable, Iterable, Iterator, Protocol, Sequence, TypeVar
 
-import h5py
 import numpy as np
 from numpy.typing import NDArray
 import torch
@@ -1820,10 +1819,9 @@ def workspace_image_shape(workspace: Any) -> tuple[int, int] | None:
     if shape is not None:
         return (int(shape[0]), int(shape[1]))
     try:
-        with h5py.File(workspace.info.recording, "r") as handle:
-            dataset = handle[workspace_dataset(workspace)]
-            return (int(dataset.shape[1]), int(dataset.shape[2]))
-    except (OSError, KeyError):
+        with open_frames(workspace.info.recording, workspace_dataset(workspace)) as frames:
+            return frames.shape
+    except (OSError, KeyError, ValueError):
         return None
 
 
