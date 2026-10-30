@@ -11,7 +11,8 @@ time are unchanged and refreshed otherwise.  Thumbnails are flat-fielded
 when the field cache holds the recording's field and are otherwise the raw
 frame.
 
-``RecordingSource`` reads one recording's frames read-only and flat-fields
+``RecordingSource`` reads one recording's frames (an HDF5 recording or a
+video, through :func:`.frame_reader.open_frames`) and flat-fields
 them with a per-recording correction fitted once from frames spread over
 the recording and cached on disk.
 """
@@ -34,14 +35,12 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from .flat_field import FlatField, apply_flat_field, estimate_flat_field
+from .frame_reader import DATASET_PATH, HDF5_SUFFIXES, VIDEO_SUFFIXES, open_frames
 from .settings import CACHE_DIR
-from .videos import VIDEO_SUFFIXES
 
 
-DATASET_PATH = "/img_nir"
 CACHE_VERSION = 1
 FLAT_FIELD_SAMPLE_COUNT = 64
-HDF5_SUFFIXES = (".h5", ".hdf5")
 VIDEO_FACTS = {"frames": None, "height": None, "width": None, "readable": True, "error": None}
 PENDING_FACTS = {"frames": None, "height": None, "width": None, "readable": False, "error": None}
 # One app process writes the index from several threads (listings and the prober).
@@ -364,30 +363,14 @@ class RecordingSource:
         self.path = Path(path)
         self.name = self.path.stem
         self.cache_dir = Path(cache_dir)
-        self.dataset_path = dataset
-        self._lock = threading.Lock()
         self._field_lock = threading.Lock()
-        self._handle: h5py.File | None = None
         self._field: FlatField | None = None
-        with h5py.File(self.path, "r") as handle:
-            if dataset not in handle:
-                raise KeyError(f"{self.path}: no dataset {dataset}")
-            dataset = handle[dataset]
-            if dataset.ndim != 3:
-                raise ValueError(f"{self.path}: expected a [T,H,W] dataset")
-            self.frame_count = int(dataset.shape[0])
-            self.shape = (int(dataset.shape[1]), int(dataset.shape[2]))
-
-    def _dataset(self) -> h5py.Dataset:
-        if self._handle is None:
-            self._handle = h5py.File(self.path, "r")
-        return self._handle[self.dataset_path]
+        self.frames = open_frames(self.path, dataset)
+        self.frame_count = self.frames.frame_count
+        self.shape = self.frames.shape
 
     def read(self, frame_index: int) -> NDArray[np.uint8]:
-        if not 0 <= frame_index < self.frame_count:
-            raise IndexError("frame index out of range")
-        with self._lock:
-            return np.asarray(self._dataset()[int(frame_index)], dtype=np.uint8)
+        return self.frames[frame_index]
 
     def flat_field(self) -> FlatField:
         # Light/full previews and label proposals can request the same field concurrently.
@@ -409,14 +392,12 @@ class RecordingSource:
             return self._field
         indices = np.linspace(0, self.frame_count - 1, min(FLAT_FIELD_SAMPLE_COUNT, self.frame_count), dtype=np.int64)
         frames = []
-        with self._lock:
-            dataset = self._dataset()
-            for i in indices:
-                try:
-                    frames.append(np.asarray(dataset[int(i)], dtype=np.uint8))
-                except OSError:
-                    # Some recordings hold chunks compressed with an HDF5 filter plugin that is not installed.
-                    continue
+        for i in indices:
+            try:
+                frames.append(self.frames[int(i)])
+            except OSError:
+                # Some recordings hold chunks compressed with an HDF5 filter plugin that is not installed.
+                continue
         if len(frames) < min(8, len(indices)):
             raise OSError(f"only {len(frames)} of {len(indices)} calibration frames of {self.name} are readable")
         calibration = np.stack(frames)
@@ -446,7 +427,4 @@ class RecordingSource:
         return raw, np.clip(np.rint(corrected), 0, 255).astype(np.uint8)
 
     def close(self) -> None:
-        with self._lock:
-            if self._handle is not None:
-                self._handle.close()
-                self._handle = None
+        self.frames.close()

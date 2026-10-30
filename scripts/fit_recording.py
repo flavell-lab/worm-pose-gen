@@ -504,7 +504,7 @@ def main() -> int:
     if args.video:
         t_video = time.perf_counter()
         write_overlay_video(
-            run_dir / "overlay.mp4", frames.dataset, frames.field(), arrays, caption_prefix=args.recording.stem,
+            run_dir / "overlay.mp4", frames.frames, frames.field(), arrays, caption_prefix=args.recording.stem,
             fps=args.fps, scale=args.scale, quality=args.quality, slab=args.slab, device=device,
         )
         timing["video"] += time.perf_counter() - t_video

@@ -77,6 +77,7 @@ import torch
 from .ambiguity import FLAG_NAMES, compute_ambiguity, summarize_ambiguity
 from .batch_fit import PRESETS, BatchFitConfig, fit_masks
 from .field_store import FieldStore, source_key
+from .frame_reader import open_frames
 from .head_track import track_heads
 from .head_tracking import read_head_tracking
 from .prefetch import prefetched
@@ -346,26 +347,16 @@ class Frames:
         self, recording: Path, *, dataset_root: Path | str | None = None, flat_field: bool = True, dataset: str = DATASET_PATH
     ) -> None:
         self.path = Path(recording)
-        self.dataset_path = dataset
-        self._handle: h5py.File | None = None
         self._source = (
             RecordingSource(self.path, Path(dataset_root or CACHE_DIR) / "flat_fields", dataset=dataset) if flat_field else None
         )
         self._field: Any = None
         self._gain: torch.Tensor | None = None  # the flat field's gain on the device of corrected_on
         self.field_seconds = 0.0
-        with h5py.File(self.path, "r") as handle:
-            if dataset not in handle:
-                raise KeyError(f"{self.path}: no dataset {dataset}")
-            data = handle[dataset]
-            self.total = int(data.shape[0])
-            self.shape = (int(data.shape[1]), int(data.shape[2]))
-
-    @property
-    def dataset(self) -> h5py.Dataset:
-        if self._handle is None:
-            self._handle = h5py.File(self.path, "r")
-        return self._handle[self.dataset_path]
+        # The source's reader when there is a source, so a video is decoded and cached once.
+        self.frames = open_frames(self.path, dataset) if self._source is None else self._source.frames
+        self.total = self.frames.frame_count
+        self.shape = self.frames.shape
 
     def field(self) -> Any:
         """The flat field (fitted and cached on first use); ``None`` when disabled."""
@@ -379,10 +370,7 @@ class Frames:
     def read(self, indices: Sequence[int]) -> NDArray[np.uint8]:
         """Raw frames as a [N, H, W] uint8 stack; one slab read when the indices are consecutive."""
 
-        indices = [int(i) for i in indices]
-        if indices and indices[-1] - indices[0] + 1 == len(indices):
-            return np.asarray(self.dataset[indices[0] : indices[-1] + 1], dtype=np.uint8)
-        return np.stack([np.asarray(self.dataset[i], dtype=np.uint8) for i in indices])
+        return self.frames.read(indices)
 
     def corrected(self, indices: Sequence[int]) -> tuple[NDArray[np.uint8], float, float]:
         """Flat-fielded frames plus the read and correction seconds."""
@@ -421,10 +409,9 @@ class Frames:
         return corrected
 
     def close(self) -> None:
-        if self._handle is not None:
-            self._handle.close()
-            self._handle = None
-        if self._source is not None:
+        if self._source is None:
+            self.frames.close()
+        else:
             self._source.close()
 
 

@@ -290,8 +290,8 @@ def write_overlay_video(
 ) -> None:
     """Write the overlay MP4 from a run's final arrays.
 
-    Frames are re-read from ``dataset`` (anything indexable by frame, an HDF5
-    dataset or an array) so the video always shows the poses as stored,
+    Frames are re-read from ``dataset`` (anything indexable by frame and frame
+    range: a frame reader, an HDF5 dataset or an array) so the video always shows the poses as stored,
     including frames replaced by propagation after the independent pass.
     """
 

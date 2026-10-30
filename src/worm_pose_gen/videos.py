@@ -15,8 +15,7 @@ import h5py
 import imageio_ffmpeg
 import numpy as np
 
-
-VIDEO_SUFFIXES = (".avi",)
+from .frame_reader import VIDEO_SUFFIXES
 
 
 def is_video(path: str | Path) -> bool:
