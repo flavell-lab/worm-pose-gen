@@ -93,7 +93,7 @@ class VideoFramesTests(unittest.TestCase):
 
     @staticmethod
     def _reader_of(path: Path) -> VideoFrames:
-        return VideoFrames(path, cache_bytes=1)
+        return VideoFrames(path, cache_frames=1)
 
     def test_the_test_videos_are_what_they_claim(self) -> None:
         for kind in ("mp4", "h264 avi"):
@@ -150,7 +150,7 @@ class VideoFramesTests(unittest.TestCase):
                     with self.assertRaises(IndexError):
                         reader[FRAMES]
                 # One reader shared by threads, as the app's server shares it.
-                with VideoFrames(self.videos[kind], cache_bytes=1) as reader:
+                with VideoFrames(self.videos[kind], cache_frames=1) as reader:
                     order = [int(k) for k in rng.permutation(FRAMES)]
                     with ThreadPoolExecutor(max_workers=4) as pool:
                         shared = list(pool.map(reader.__getitem__, order))

@@ -13,15 +13,18 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import gc
 import time
 import unittest
 from unittest import mock
+import weakref
 
 from PIL import Image
 from fastapi.testclient import TestClient
 
 from worm_pose_gen import library, pipeline
 from worm_pose_gen.app import AppConfig, create_app
+from worm_pose_gen.app import state as app_state
 from worm_pose_gen.workspace import Workspace
 
 from tests.test_frame_view import FRAMES, HEIGHT, WIDTH, _write_recording, _write_workspace
@@ -177,6 +180,27 @@ class AppTests(unittest.TestCase):
         for path in ("starts?frame=0", "pose?frame=0", "segment?frame=0", "inspection", "candidates", "region?frame=0"):
             self.assertEqual(self.client.get(f"/api/workspaces/fitted/{path}").status_code, 404, path)
 
+    def test_only_the_last_workspaces_opened_stay_open(self) -> None:
+        state = self.app.state.app_state
+        _write_workspace(self.root / "workspaces", "second", self.recording)
+        self.addCleanup(shutil.rmtree, self.root / "workspaces" / "second")
+        enabled = gc.isenabled()
+        gc.disable()
+        self.addCleanup(lambda: gc.enable() if enabled else None)
+        with mock.patch.object(app_state, "OPEN_WORKSPACES", 1):
+            held = state.view("fitted")
+            reader = weakref.ref(held.source.frames)
+            self.assertIs(state.view("fitted"), held)
+            state.view("second")
+            # Evicted, the view still serves the request that holds it, and is freed with it (no cycle collection).
+            self.assertEqual(held.source.read(0).shape, (HEIGHT, WIDTH))
+            self.assertIsNot(state.view("fitted"), held)
+            del held
+            self.assertIsNone(reader())
+            # The Recordings screen's status does not open the workspace or its recording.
+            with mock.patch.object(state, "view", side_effect=AssertionError("opened")):
+                self.assertEqual(self.get("/api/workspaces/second/status")["name"], "second")
+
     def test_stage_job_on_a_new_workspace(self) -> None:
         Workspace.create(self.root / "workspaces", "fresh", self.recording, 0, FRAMES - 1)
         empty = self.get("/api/workspaces/fresh")
@@ -272,6 +296,7 @@ class DevAppTests(AppTests):
     DEV = True
     # Only the payloads differ in developer mode.
     test_thumbnails = test_stage_job_on_a_new_workspace = test_file_explorer = test_command_jobs_and_cancel = None
+    test_only_the_last_workspaces_opened_stay_open = None
 
 
 if __name__ == "__main__":

@@ -29,15 +29,14 @@ from fastapi import HTTPException
 from .workspace_view import WorkspaceView, STAMPED_FILES
 from .. import fixes
 from ..pipeline import placed_rows, workspace_lock
-from ..workspace import _write_json_atomic, utc_now
+from ..workspace import Workspace, _write_json_atomic, utc_now
 
 ISSUES_SUMMARY = "issues_summary.json"
 _REVIEW_LOCK = threading.RLock()
 _FINGERPRINT_CACHE: WeakKeyDictionary = WeakKeyDictionary()
 
 
-def revision(view: WorkspaceView) -> str:
-    workspace = view.workspace
+def revision(workspace: Workspace) -> str:
     paths = [workspace.path / name for name in STAMPED_FILES]
     paths.append(workspace.recording)
     for directory in ("masks", "overrides/masks"):
@@ -58,7 +57,7 @@ def row_fingerprints(view: WorkspaceView, rows: list[int]) -> dict[str, str]:
     one segment survives correcting another. Neighbours cover pairwise motion,
     length and orientation signals even before derived flags are recomputed.
     """
-    token = revision(view)
+    token = revision(view.workspace)
     cached_token, cached = _FINGERPRINT_CACHE.get(view, (None, {}))
     if cached_token != token:
         cached = {}
@@ -121,7 +120,7 @@ def issues(view: WorkspaceView) -> dict[str, Any]:
 
 def _issues(view: WorkspaceView) -> dict[str, Any]:
     run = view.run
-    token = revision(view)
+    token = revision(view.workspace)
     n = view.workspace.n
     reviewed = np.zeros(n, dtype=bool)
     reviewed[sorted(_reviewed(view))] = True
@@ -135,15 +134,15 @@ def _issues(view: WorkspaceView) -> dict[str, Any]:
     return {"revision": token, **report, "min_issue_frames": fixes.MIN_ISSUE_FRAMES}
 
 
-def cached_issue_summary(view: WorkspaceView) -> dict[str, Any] | None:
+def cached_issue_summary(workspace: Workspace) -> dict[str, Any] | None:
     """The issue counts last computed for the workspace (``fixes.issue_report``'s summary), or ``None`` when anything changed since."""
 
-    path = view.workspace.path / ISSUES_SUMMARY
+    path = workspace.path / ISSUES_SUMMARY
     try:
         cached = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    return cached.get("summary") if cached.get("revision") == revision(view) else None
+    return cached.get("summary") if cached.get("revision") == revision(workspace) else None
 
 
 def review_issue(view: WorkspaceView, first_frame: int, last_frame: int, expected_revision: str) -> dict[str, Any]:
@@ -159,7 +158,7 @@ def review_issue(view: WorkspaceView, first_frame: int, last_frame: int, expecte
 def _mark(view: WorkspaceView, first: int, last: int, expected_revision: str) -> None:
     """Add rows ``first..last`` to the stored review (caller holds the locks); 409 when the workspace changed since ``expected_revision``."""
 
-    token = revision(view)
+    token = revision(view.workspace)
     if expected_revision != token:
         raise HTTPException(409, "Workspace changed. Refresh the issues before marking them reviewed.")
     if first < 0 or last < first or last >= view.workspace.n:

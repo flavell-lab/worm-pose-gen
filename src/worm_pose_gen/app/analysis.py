@@ -391,7 +391,7 @@ def status(app: AppState, name: str, jobs: list[JobRecord] | None = None, opened
     active = [r for r in records if r.state not in FINISHED_STATES]
     analysis = next((r for r in records if r.spec.kind == ANALYSE_JOB_KIND), None)
     analysed = bool(pipeline.read_summary(workspace).get("fit_config"))
-    issues = cached_issue_summary(app.view(name)) if analysed and not active else None
+    issues = cached_issue_summary(workspace) if analysed and not active else None
     exports = list_exports(workspace)
     if analysis is not None and not analysis.finished:
         state = "queued" if analysis.state == "queued" or analysis.slurm_state == "PENDING" else "analysing"

@@ -57,8 +57,10 @@ HDF5_SUFFIXES = (".h5", ".hdf5")
 VIDEO_SUFFIXES = (".avi", ".mp4")
 INDEX_DIR = CACHE_DIR / "video_index"
 INDEX_VERSION = 3
-# Decoded frames kept per video reader (about 90 frames of 968x732).
-CACHE_BYTES = 64 * 2**20
+# Decoded frames kept per video reader: a body-network context window (33 frames, temporal_context.MAX_LAG = 16)
+# and some.  Measured on the lab's MJPEG, other reads gain nothing from more (each frame is its own keyframe);
+# H.264 gains only when stepping back through a group of pictures.  28 MB at 968x732.
+CACHE_FRAMES = 40
 # Decoder threads per video: frame threads speed H.264 up about as many times (130 frames/s single-threaded).
 DECODE_THREADS = 4
 
@@ -307,7 +309,7 @@ def _decoded_frames(container: av.container.InputContainer, stream: av.VideoStre
 class VideoFrames(FrameReader):
     """A video decoded through PyAV: frame ``k`` is the ``k``-th frame of :class:`VideoIndex`, decoded to 8-bit gray."""
 
-    def __init__(self, path: Path, cache_bytes: int = CACHE_BYTES) -> None:
+    def __init__(self, path: Path, cache_frames: int = CACHE_FRAMES) -> None:
         self.path = Path(path)
         self.index = VideoIndex.load(self.path)
         self.frame_count = len(self.index.pts)
@@ -333,7 +335,7 @@ class VideoFrames(FrameReader):
         self._key = 0
         self._key_seen = False
         self._cache: OrderedDict[int, NDArray[np.uint8]] = OrderedDict()
-        self._cache_frames = max(1, cache_bytes // (self.shape[0] * self.shape[1]))
+        self._cache_frames = max(1, cache_frames)
 
     def _frame(self, index: int) -> NDArray[np.uint8]:
         with self._lock:

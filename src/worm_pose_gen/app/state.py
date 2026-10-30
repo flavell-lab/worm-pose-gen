@@ -1,15 +1,16 @@
 """The application's shared state: workspaces, recordings, models, the libraries and the job queue.
 
 One instance per server, attached to the FastAPI app.  It owns the
-recordings opened read-only (one ``RecordingSource`` each, shared by every
-workspace on it), the segmenters and body-field networks loaded once on the
-app's device, a ``WorkspaceView`` per opened workspace, the libraries, the
+segmenters and body-field networks loaded once on the app's device, a
+``WorkspaceView`` for each of the last few workspaces opened (each with its
+recording opened read-only, a ``RecordingSource``), the libraries, the
 Labeling page's services and queues, and the ``JobRunner`` whose background
 thread starts job processes on the local GPUs or submits them to SLURM.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 import threading
 from typing import Any
@@ -26,6 +27,10 @@ from ..workspace import Workspace, list_workspaces, read_recording_shape
 from .config import AppConfig
 from .frame_view import Segmenters
 from .workspace_view import WorkspaceView
+
+
+# Workspace views kept open, each with its recording's reader (a video's holds up to frame_reader.CACHE_FRAMES decoded frames).
+OPEN_WORKSPACES = 4
 
 
 class NotFound(LookupError):
@@ -64,13 +69,11 @@ class AppState:
         device = config.server_device(memory_used() if config.device is None and len(config.gpus) > 1 else None)
         self.device = torch.device(device if device else ("cuda" if torch.cuda.is_available() else "cpu"))
         self.segmenters = Segmenters(self.device)
-        self._sources: dict[str, tuple[RecordingSource | None, str | None]] = {}
-        self._sources_lock = threading.Lock()
         slurm = SlurmBackend(self.compute.slurm.defaults) if self.compute.slurm.available else None
         self.runner = JobRunner(
             config.jobs_root, LocalGPUBackend(list(config.gpus)), slurm, max_concurrent=config.max_concurrent, memory_used=memory_used,
         )
-        self._views: dict[str, WorkspaceView] = {}
+        self._views: OrderedDict[str, WorkspaceView] = OrderedDict()
         self._lock = threading.Lock()
         self.libraries = Libraries(config.lab_library, config.library)
         # Probes the Recordings screen's new files in the background (``<workspaces_root>/recordings_index.json``).
@@ -94,10 +97,12 @@ class AppState:
     def close(self) -> None:
         self.runner.stop()
         self.network_fields.close()
-        with self._sources_lock:
-            for source, _ in self._sources.values():
-                if source is not None:
-                    source.close()
+        with self._lock:
+            views = list(self._views.values())
+            self._views.clear()
+        for view in views:
+            if view.source is not None:
+                view.source.close()
 
     def body_net(self, path: Path) -> Any:
         """The body-field network at ``path`` (a workspace's body model), loaded on the app's device at first use."""
@@ -111,18 +116,6 @@ class AppState:
 
                 self._body_nets[path] = load_body_net(path, self.device)
             return self._body_nets[path]
-
-    def source(self, recording: str | Path, dataset: str = DATASET_PATH) -> tuple[RecordingSource | None, str | None]:
-        """The shared read-only source of a recording (flat fields cached under ``<dataset_root>/flat_fields``), or why it cannot be read."""
-
-        key = f"{recording}#{dataset}"
-        with self._sources_lock:
-            if key not in self._sources:
-                try:
-                    self._sources[key] = (RecordingSource(Path(recording), self.config.dataset_root / "flat_fields", dataset=dataset), None)
-                except (OSError, ValueError, KeyError) as error:
-                    self._sources[key] = (None, f"{type(error).__name__}: {error}")
-            return self._sources[key]
 
     # ---------------------------------------------------------------- workspaces
 
@@ -140,16 +133,29 @@ class AppState:
         path = self.workspace_path(name)
         with self._lock:
             view = self._views.get(name)
+            if view is not None:
+                self._views.move_to_end(name)
         if view is None or not path.exists():
             if not (path / "workspace.json").exists():
                 with self._lock:
                     self._views.pop(name, None)
                 raise NotFound(f"unknown workspace {name!r}")
             workspace = Workspace.open(path)
-            source, error = self.source(str(workspace.recording), workspace_dataset(workspace))
-            view = WorkspaceView(workspace, source, error)
+            # Opened outside the lock: indexing a new video takes seconds, and other workspaces' requests go on meanwhile.
+            try:
+                source = RecordingSource(workspace.recording, self.config.dataset_root / "flat_fields", dataset=workspace_dataset(workspace))
+                error = None
+            except Exception as failure:  # noqa: BLE001 - any failure makes the recording unreadable, and the page says why
+                source, error = None, f"{type(failure).__name__}: {failure}"
+            opened = WorkspaceView(workspace, source, error)
             with self._lock:
-                view = self._views.setdefault(name, view)
+                view = self._views.setdefault(name, opened)
+                self._views.move_to_end(name)
+                # Dropped, not closed: a request may still be reading the view; its reader is freed with the last reference.
+                while len(self._views) > OPEN_WORKSPACES:
+                    self._views.popitem(last=False)
+            if view is not opened and source is not None:
+                source.close()
         return view
 
     def has_workspace(self, name: str) -> bool:
