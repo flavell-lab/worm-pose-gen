@@ -34,7 +34,7 @@ terminal, one at a time.
    `$USER` only if your folder in `/temp_data4` has a different name:
 
    ```bash
-   git clone git@github.com:ahiser1117/worm-pose-gen.git
+   git clone git@github.com:flavell-lab/worm-pose-gen.git
    cd worm-pose-gen
    scripts/bootstrap_environment.sh --data-dir /temp_data4/$USER/worm-pose-data
    ```
@@ -82,6 +82,11 @@ cd worm-pose-gen
 
 ## Analyse a recording
 
+The **Workspace** page opens on your recordings: the ones you have analysed
+first, with what is left to review, then the ones you have not.
+
+![The recordings list](docs/screenshots/recordings.png)
+
 1. **Add your recordings.** The first time, press **Add a folder…** and
    choose the folder your recordings are in. The app finds every recording
    in it and in the folders inside it. **Add recordings…** adds more later.
@@ -98,6 +103,9 @@ cd worm-pose-gen
    - **Relabel** to send the frames to Labeling.
 
    Every fix can be undone. Press `?` to see the keyboard shortcuts.
+
+   ![A recording open in the Workspace](docs/screenshots/workspace.png)
+
 5. **Export.** Press **Export** at the top. The table is saved in your data
    folder, in `workspaces/`, in the recording's `exports` folder. It has one
    row per frame:
@@ -115,6 +123,8 @@ Labels are how the models learn, and more labels make them better.
 3. Trace the midline, starting at the **head**.
 4. Press **Save & next** (Enter).
 
+![The Labeling page](docs/screenshots/labeling.png)
+
 Your labels are saved in your own data folder. Editing a lab label saves
 your own copy; the lab's version is not changed.
 
@@ -124,6 +134,11 @@ This is optional. On **Training**, **Models** lists the
 models with their scores (★ marks the ones in use). **Train from this**
 trains a new model from one of them, the same way it was made, on the
 labels you choose under **Datasets**.
+
+**Datasets** shows every label for a setup and which recordings each
+dataset uses to train, validate and test.
+
+![The Datasets tab of the Training page](docs/screenshots/datasets.png)
 
 ## Get the latest version
 
