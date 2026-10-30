@@ -110,10 +110,10 @@ def cached_clip(clip: Clip, cache_dir: Path = DEFAULT_CACHE, dataset_path: str =
     if path.exists():
         with np.load(path) as archive:
             return archive["frames"], int(archive["first"])
-    source = Frames(Path(clip.recording), dataset=dataset_path)
-    first = max(0, clip.start - MAX_LAG)
-    last = min(source.total, clip.start + clip.frames + MAX_LAG)
-    frames, _, _ = source.corrected(list(range(first, last)))
+    with Frames(Path(clip.recording), dataset=dataset_path) as source:
+        first = max(0, clip.start - MAX_LAG)
+        last = min(source.total, clip.start + clip.frames + MAX_LAG)
+        frames, _, _ = source.corrected(list(range(first, last)))
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name("." + path.name + ".tmp")
     with open(temporary, "wb") as handle:

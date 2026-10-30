@@ -426,3 +426,9 @@ class RecordingSource:
 
     def close(self) -> None:
         self.frames.close()
+
+    def __enter__(self) -> RecordingSource:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()

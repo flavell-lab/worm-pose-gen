@@ -295,6 +295,15 @@ def _decoded_timestamps(container: av.container.InputContainer, stream: av.Video
     return timestamps
 
 
+def _decoded_frames(container: av.container.InputContainer, stream: av.VideoStream) -> Iterator[av.VideoFrame]:
+    """The frames decoded from the container's position on (a function, not a method: the reader holds the generator)."""
+
+    for packet in container.demux(stream):
+        # Empty packets mark dropped frames, except the last, which flushes the decoder.
+        if packet.size or packet.dts is None:
+            yield from packet.decode()
+
+
 class VideoFrames(FrameReader):
     """A video decoded through PyAV: frame ``k`` is the ``k``-th frame of :class:`VideoIndex`, decoded to 8-bit gray."""
 
@@ -339,14 +348,8 @@ class VideoFrames(FrameReader):
 
     def _seek(self, key: int) -> None:
         self._container.seek(int(self.index.pts[key]), stream=self._stream, backward=True, any_frame=False)
-        self._decoded = self._frames()
+        self._decoded = _decoded_frames(self._container, self._stream)
         self._position, self._key, self._key_seen = -1, key, False
-
-    def _frames(self) -> Iterator[av.VideoFrame]:
-        for packet in self._container.demux(self._stream):
-            # Empty packets mark dropped frames, except the last, which flushes the decoder.
-            if packet.size or packet.dts is None:
-                yield from packet.decode()
 
     def _decode(self, index: int) -> NDArray[np.uint8]:
         cached = self._cache.get(index)

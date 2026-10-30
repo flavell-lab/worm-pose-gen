@@ -299,32 +299,32 @@ def build_items(workspace_path: Path, out_dir: Path, params: SelectionParams = S
         drop = rng.choice(clear, size=len(clear) - limit, replace=False)
         keep = np.setdiff1d(np.arange(len(rows)), drop)
         rows, kinds = rows[keep], kinds[keep]
-    source = Frames(Path(workspace.info.recording))
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     name = Path(workspace_path).name
     entries = []
     masks = workspace.get_masks(rows)
-    for row, kind in zip(rows, kinds):
-        frame = int(state["frame_index"][row])
-        indices = [frame + o for o in CONTEXT_OFFSETS]
-        valid = np.array([0 <= i < source.total for i in indices])
-        clamped = [min(max(i, 0), source.total - 1) for i in indices]
-        frames, _, _ = source.corrected(clamped)
-        targets = render_item_targets(masks[int(row)], state["centerline_xy"][row], state["width_profile"][row], params.band_px)
-        path = out_dir / f"{name}_{frame:06d}.npz"
-        temporary = path.with_name("." + path.name + ".tmp")
-        with open(temporary, "wb") as handle:
-            np.savez_compressed(
-                handle, frames=frames, offsets=np.asarray(CONTEXT_OFFSETS), valid=valid, centerline_xy=state["centerline_xy"][row],
-                width_profile=state["width_profile"][row], **targets,
-            )
-        os.replace(temporary, path)
-        entries.append({
-            "file": path.name, "workspace": name, "recording": str(workspace.info.recording), "frame": frame, "kind": str(kind),
-            "iou": float(state["iou"][row]), "ignored_px": int((targets["mask"] == IGNORE).sum()),
-            "overlap_px": int(targets["overlap"].sum()), "self_contact": bool(state["flag_self_contact"][row]),
-        })
+    with Frames(Path(workspace.info.recording)) as source:
+        for row, kind in zip(rows, kinds):
+            frame = int(state["frame_index"][row])
+            indices = [frame + o for o in CONTEXT_OFFSETS]
+            valid = np.array([0 <= i < source.total for i in indices])
+            clamped = [min(max(i, 0), source.total - 1) for i in indices]
+            frames, _, _ = source.corrected(clamped)
+            targets = render_item_targets(masks[int(row)], state["centerline_xy"][row], state["width_profile"][row], params.band_px)
+            path = out_dir / f"{name}_{frame:06d}.npz"
+            temporary = path.with_name("." + path.name + ".tmp")
+            with open(temporary, "wb") as handle:
+                np.savez_compressed(
+                    handle, frames=frames, offsets=np.asarray(CONTEXT_OFFSETS), valid=valid, centerline_xy=state["centerline_xy"][row],
+                    width_profile=state["width_profile"][row], **targets,
+                )
+            os.replace(temporary, path)
+            entries.append({
+                "file": path.name, "workspace": name, "recording": str(workspace.info.recording), "frame": frame, "kind": str(kind),
+                "iou": float(state["iou"][row]), "ignored_px": int((targets["mask"] == IGNORE).sum()),
+                "overlap_px": int(targets["overlap"].sum()), "self_contact": bool(state["flag_self_contact"][row]),
+            })
     return entries, selection["counts"]
 
 

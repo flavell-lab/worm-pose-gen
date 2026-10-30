@@ -413,6 +413,12 @@ class Frames:
         else:
             self._source.close()
 
+    def __enter__(self) -> Frames:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
 
 class SegmentationModel(Protocol):
     device: torch.device

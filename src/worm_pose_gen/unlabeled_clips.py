@@ -105,8 +105,8 @@ def _write_segment(segment: Segment, root: str, dataset: str) -> tuple[Segment, 
     if target.exists():
         return segment, None
     try:
-        source = Frames(Path(segment.recording), dataset_root=root, dataset=dataset)
-        frames, _, _ = source.corrected(list(range(segment.start, segment.start + segment.length)))
+        with Frames(Path(segment.recording), dataset_root=root, dataset=dataset) as source:
+            frames, _, _ = source.corrected(list(range(segment.start, segment.start + segment.length)))
     except (OSError, KeyError, ValueError) as error:
         return segment, f"{type(error).__name__}: {error}"
     temporary = target.with_name("." + target.name + ".tmp")

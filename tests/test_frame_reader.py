@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
+import gc
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import weakref
 
 import av
 import h5py
@@ -245,6 +247,21 @@ class VideoFramesTests(unittest.TestCase):
                         self.assertGreater(reader.frame_count, FRAMES * fraction - 5)
                         for k in reversed(range(reader.frame_count)):
                             self.assertEqual(_decoded_index(reader[k]), k)
+
+    def test_a_reader_is_freed_by_reference_counting(self) -> None:
+        # Readers that are never closed (one per segment in a process pool) must not wait for the cycle collector.
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            for kind in self.videos:
+                reader = VideoFrames(self.videos[kind])
+                reader[5]
+                reference = weakref.ref(reader)
+                del reader
+                self.assertIsNone(reference(), kind)
+        finally:
+            if enabled:
+                gc.enable()
 
     def test_a_damaged_index_cache_is_rebuilt(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):

@@ -654,6 +654,17 @@ class Source:
             self._frames = Frames(Path(self.recording))
         return self._frames.corrected([int(self.frame_index[r]) for r in rows])[0]
 
+    def close(self) -> None:
+        if self._frames is not None:
+            self._frames.close()
+            self._frames = None
+
+    def __enter__(self) -> Source:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
 
 def build_textures(source: Source, count: int, rng: np.random.Generator) -> list[Texture]:
     rows = source.texture_rows()
@@ -773,16 +784,16 @@ TEXTURES_PER_WORKER = 12
 def _render_batch(job: tuple[str, list[int], tuple[int, ...], int, str, float]) -> list[dict[str, Any]]:
     workspace, ids, lags, seed, output, fiber_share = job
     rng = np.random.default_rng((seed, ids[0]))
-    source = Source(Path(workspace))
-    textures = build_textures(source, TEXTURES_PER_WORKER, rng)
-    centres = source.windows(int(round(max(SPEEDS) * max(lags))) + 1)
     written = []
-    for item_id in ids:
-        item = None
-        while item is None:
-            item = make_item(source, textures, int(rng.choice(centres)), lags, rng, fiber_share=fiber_share)
-        save_item(Path(output) / f"item_{item_id:06d}.npz", item)
-        written.append({"id": item_id, **json.loads(str(item["meta"]))})
+    with Source(Path(workspace)) as source:
+        textures = build_textures(source, TEXTURES_PER_WORKER, rng)
+        centres = source.windows(int(round(max(SPEEDS) * max(lags))) + 1)
+        for item_id in ids:
+            item = None
+            while item is None:
+                item = make_item(source, textures, int(rng.choice(centres)), lags, rng, fiber_share=fiber_share)
+            save_item(Path(output) / f"item_{item_id:06d}.npz", item)
+            written.append({"id": item_id, **json.loads(str(item["meta"]))})
     return written
 
 
