@@ -3,10 +3,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import av
 import h5py
 import numpy as np
 from scipy import ndimage
 
+from worm_pose_gen import frame_reader
 from worm_pose_gen.stage_alignment import (
     StageCalibration,
     align_frame,
@@ -16,6 +18,9 @@ from worm_pose_gen.stage_alignment import (
     fill_shifts,
     fill_stretches,
     fit_calibration,
+    read_stage,
+    recording_calibration,
+    recording_steps,
     register_shift,
     shift_image,
     stage_shift_px,
@@ -201,6 +206,31 @@ class SubstrateShiftTests(unittest.TestCase):
         self.assertTrue(np.isnan(stage[18:24]).all())
         np.testing.assert_allclose(filled, -position, atol=0.5)
         self.assertGreater(np.abs(stage[35, 1] + position[35, 1]), 9.0)
+
+
+class VideoTests(unittest.TestCase):
+    def test_a_video_registers_its_frames_and_has_no_stage(self) -> None:
+        n, shape = 12, (96, 128)
+        rng = np.random.default_rng(4)
+        texture = np.clip(120.0 + 25.0 * ndimage.gaussian_filter(rng.normal(size=(120, 160)), 1.2), 0, 255).astype(np.uint8)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            path = Path(directory) / "rec.avi"
+            # Lossless gray frames, the background moving 1 px right a frame.
+            with av.open(str(path), "w") as container:
+                stream = container.add_stream("ffv1", rate=20)
+                stream.width, stream.height, stream.pix_fmt = shape[1], shape[0], "gray"
+                for t in range(n):
+                    image = np.ascontiguousarray(texture[10 : 10 + shape[0], 20 - t : 20 - t + shape[1]])
+                    container.mux(stream.encode(av.VideoFrame.from_ndarray(image, format="gray")))
+                container.mux(stream.encode(None))
+            steps = recording_steps(path, np.arange(n), Path(directory) / "steps", Path(directory) / "flat")
+            # As for an HDF5 recording without /pos_stage: KeyError, which the export and the pipeline read as "no stage".
+            with self.assertRaisesRegex(KeyError, "no /pos_stage"):
+                read_stage(path)
+            with self.assertRaisesRegex(KeyError, "no /pos_stage"):
+                recording_calibration(path, cache_dir=Path(directory) / "calibrations")
+        np.testing.assert_allclose(steps[:-1, :2], np.tile([1.0, 0.0], (n - 1, 1)), atol=0.2)
+        self.assertTrue(np.isnan(steps[-1]).all())
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
 import os
 from pathlib import Path
 import tempfile
@@ -43,12 +44,17 @@ def _decoded_index(image: np.ndarray) -> int:
     return int(sum(int(bit) << b for b, bit in enumerate(bits[:BITS])))
 
 
-def _write_video(path: Path, codec: str, frames: int = FRAMES) -> None:
-    """MJPEG (every frame a keyframe), or H.264 with B-frames and an open group of 12 pictures."""
+def _write_video(path: Path, codec: str, frames: int = FRAMES, milliseconds: list[int] | None = None) -> None:
+    """MJPEG (every frame a keyframe), or H.264 with B-frames and an open group of 12 pictures.
+
+    ``milliseconds`` gives each frame's presentation time (a variable frame rate); 20 frames/s otherwise.
+    """
 
     with av.open(str(path), "w") as container:
         stream = container.add_stream(codec, rate=20)
         stream.width, stream.height = WIDTH, HEIGHT
+        if milliseconds is not None:
+            stream.time_base = stream.codec_context.time_base = Fraction(1, 1000)
         if codec == "mjpeg":
             stream.pix_fmt = "yuvj420p"
         else:
@@ -56,6 +62,8 @@ def _write_video(path: Path, codec: str, frames: int = FRAMES) -> None:
             stream.options = {"x264-params": "keyint=12:min-keyint=12:scenecut=0:bframes=3:open-gop=1"}
         for index in range(frames):
             frame = av.VideoFrame.from_ndarray(_coded_frame(index), format="gray")
+            if milliseconds is not None:
+                frame.pts, frame.time_base = milliseconds[index], Fraction(1, 1000)
             container.mux(stream.encode(frame))
         container.mux(stream.encode(None))
 
@@ -156,6 +164,19 @@ class VideoFramesTests(unittest.TestCase):
             self.assertEqual(sought, [keyframes[2], keyframes[1]])
             reader._container = container
 
+    def test_times_are_the_presentation_timestamps_from_the_first_frame(self) -> None:
+        with open_frames(self.videos["avi"]) as reader:
+            np.testing.assert_allclose(reader.times, np.arange(FRAMES) / 20.0)
+        # A variable frame rate (a dropped frame, uneven gaps) keeps its times, whatever time base the muxer picks.
+        milliseconds = [0, 50, 100, 200, 230, 300, 410, 450, 500, 650, 700, 760, 800, 850, 900, 1000]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
+            path = Path(directory) / "vfr.mp4"
+            _write_video(path, "libx264", frames=len(milliseconds), milliseconds=milliseconds)
+            for _ in range(2):  # built, then loaded from the cache
+                with open_frames(path) as reader:
+                    np.testing.assert_allclose(reader.times, np.array(milliseconds) / 1000.0, atol=1e-9)
+                    self.assertEqual([_decoded_index(reader[k]) for k in (3, 9, 15)], [3, 9, 15])
+
     def test_index_cache_is_reused_and_rebuilt_when_the_file_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(frame_reader, "INDEX_DIR", Path(directory) / "index"):
             path = Path(directory) / "clip.mp4"
@@ -194,7 +215,7 @@ class Hdf5FramesTests(unittest.TestCase):
             with open_frames(path) as reader, h5py.File(path, "r") as handle:
                 self.assertIsInstance(reader, Hdf5Frames)
                 data = handle["/img_nir"]
-                self.assertEqual((reader.frame_count, reader.shape, reader.fps), (9, (7, 5), 20.0))
+                self.assertEqual((reader.frame_count, reader.shape, reader.fps, reader.times), (9, (7, 5), 20.0, None))
                 for k in range(9):
                     np.testing.assert_array_equal(reader[k], data[k])
                 np.testing.assert_array_equal(reader[2:6], data[2:6])

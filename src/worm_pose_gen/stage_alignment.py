@@ -38,7 +38,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import ndimage
 
-from .recordings import DATASET_PATH, RecordingSource
+from .frame_reader import VIDEO_SUFFIXES, open_frames
+from .recordings import RecordingSource
 from .settings import CACHE_DIR
 
 
@@ -120,6 +121,9 @@ def clean_stage(raw: ArrayLike, max_gap: int = MAX_GAP_FRAMES) -> StageTrack:
 
 
 def read_stage(recording: Path | str, max_gap: int = MAX_GAP_FRAMES) -> StageTrack:
+    # A video carries no stage: it fails as an HDF5 recording without one does.
+    if Path(recording).suffix.lower() in VIDEO_SUFFIXES:
+        raise KeyError(f"{recording}: no {STAGE_DATASET}")
     with h5py.File(recording, "r") as handle:
         if STAGE_DATASET not in handle:
             raise KeyError(f"{recording}: no {STAGE_DATASET}")
@@ -523,8 +527,8 @@ def recording_steps(
     if path.exists():
         with np.load(path) as archive:
             rows = np.asarray(archive["rows"], dtype=np.float64)
-    with h5py.File(recording, "r") as handle:
-        frame_count = int(handle[DATASET_PATH].shape[0])
+    with open_frames(recording) as reader:
+        frame_count = reader.frame_count
     frames = np.asarray(frames, dtype=np.int64)
     wanted = np.unique(frames[(frames >= 0) & (frames < frame_count - 1)])
     missing = np.setdiff1d(wanted, rows[:, 0].astype(np.int64))

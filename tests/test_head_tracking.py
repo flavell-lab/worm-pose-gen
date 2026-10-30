@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from worm_pose_gen.head_tracking import read_head_tracking
+from tests.test_frame_reader import HEIGHT, WIDTH, _write_video
 
 
 def recording(tmp_path, *, metadata=True):
@@ -49,6 +50,15 @@ class HeadTrackingTests(unittest.TestCase):
             del h['pos_feature']
         result = read_head_tracking(path, [0], (20, 30))
         assert not result.valid.any()
+        assert result.provenance['reason'] == 'missing_img_nir_or_pos_feature'
+
+
+    def test_video_has_no_landmarks(self):
+        path = self.tmp_path / 'recording.mp4'
+        _write_video(path, 'libx264', frames=4)
+        result = read_head_tracking(path, [3, 0], (HEIGHT, WIDTH))
+        assert not result.valid.any() and np.isnan(result.xy).all()
+        assert result.provenance['status'] == 'unavailable'
         assert result.provenance['reason'] == 'missing_img_nir_or_pos_feature'
 
 
