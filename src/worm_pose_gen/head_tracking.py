@@ -18,6 +18,8 @@ import h5py
 import numpy as np
 from numpy.typing import NDArray
 
+from .frame_reader import VIDEO_SUFFIXES
+
 
 @dataclass(frozen=True)
 class HeadTracking:
@@ -75,6 +77,10 @@ def read_head_tracking(
         'status': 'unavailable',
     }
     result = HeadTracking(xy, valid, confidence, indices, ids, timestamps, provenance)
+    # A video carries no landmarks: it is rejected as an HDF5 recording without them is.
+    if Path(recording_path).suffix.lower() in VIDEO_SUFFIXES:
+        provenance['reason'] = 'missing_img_nir_or_pos_feature'
+        return result
     try:
         with h5py.File(recording_path, 'r') as h:
             if '/img_nir' not in h or '/pos_feature' not in h:

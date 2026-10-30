@@ -21,11 +21,12 @@ import h5py
 import numpy as np
 import pyarrow.parquet as pq
 
-from worm_pose_gen import export_table, pipeline
+from worm_pose_gen import export_table, frame_reader, pipeline
 from worm_pose_gen.app import AppConfig, create_app
 from worm_pose_gen.app.exporting import export_workspace, exported_file, list_exports
 from worm_pose_gen.export_table import MIDLINE_POINTS, Meta, body_geometry, build_table, frame_status, read_recording_motion
 from worm_pose_gen.stage_alignment import StageCalibration, read_stage, stage_shift_px
+from tests.test_frame_reader import _write_video
 from tests.test_frame_view import FRAMES, _write_recording, _write_workspace
 
 
@@ -188,6 +189,42 @@ class RecordingMotionTests(unittest.TestCase):
         times, stage, notes = read_recording_motion(Path(self.tmp.name) / "missing.h5", "/img_nir", np.arange(3))
         self.assertIsNone(times)
         self.assertIn("unreadable", notes["error"])
+
+
+class VideoExportTests(unittest.TestCase):
+    """A video recording: its presentation timestamps are the export's times, and it has no stage."""
+
+    MILLISECONDS = [0, 50, 100, 200, 250, 330, 400, 450]
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        indexed = mock.patch.object(frame_reader, "INDEX_DIR", Path(self.tmp.name) / "index")
+        indexed.start()
+        self.addCleanup(indexed.stop)
+        self.path = Path(self.tmp.name) / "video_export_test.mp4"
+        _write_video(self.path, "libx264", frames=len(self.MILLISECONDS), milliseconds=self.MILLISECONDS)
+
+    def test_variable_frame_rate_times_and_no_stage(self) -> None:
+        seconds = np.array(self.MILLISECONDS) / 1000.0
+        frames = np.array([1, 3, 4, 7])
+        times, stage, notes = read_recording_motion(self.path, "/img_nir", frames)
+        np.testing.assert_allclose(times, seconds[frames], atol=1e-9)
+        self.assertIsNone(stage)
+        self.assertEqual((notes["time_source"]["source"], notes["stage"]), ("video presentation timestamps", "no /pos_stage"))
+        n = len(self.MILLISECONDS)
+        curves = np.stack([np.stack((np.linspace(5, 40, 100) + t, np.full(100, 20.0)), axis=1) for t in range(n)])
+        result = export_table.export(
+            Path(self.tmp.name) / "exports", recording=self.path, dataset="/img_nir", frames=np.arange(n),
+            centerline_xy=curves, width_profile_px=np.full((n, 100), 4.0), fitted=np.ones(n, dtype=bool),
+            status=np.full(n, "auto", dtype=object), pixel_size_um=None, fps=20.0, about={},
+        )
+        self.assertEqual(result["time"]["source"], "video presentation timestamps")
+        self.assertEqual(result["velocity"]["frame"], "image")
+        table = pq.read_table(result["path"])
+        np.testing.assert_allclose(table.column("time_s").to_numpy(), seconds, atol=1e-9)
+        # The body moves one pixel a frame: its velocity follows the uneven frame times.
+        np.testing.assert_allclose(table.column("velocity_x").to_numpy(), np.gradient(np.arange(n, dtype=float), seconds), rtol=1e-6)
 
 
 class WorkspaceExportTests(unittest.TestCase):

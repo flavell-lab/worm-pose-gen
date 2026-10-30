@@ -41,6 +41,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
+from .frame_reader import open_frames
 from .geometry import curvature as signed_curvature, resample_centerline
 from .run_records import timestamp_slug
 from .stage_alignment import STAGE_DATASET, recording_calibration, substrate_shift_px
@@ -212,11 +213,13 @@ def frame_status(fitted: np.ndarray, flagged: np.ndarray, stale: np.ndarray, fix
 
 
 def read_recording_motion(recording: Path, dataset: str, frames: np.ndarray) -> tuple[FloatArray | None, FloatArray | None, dict[str, Any]]:
-    """``(time_s, stage_px, notes)`` of ``frames`` from the recording's acquisition metadata; either is ``None`` when absent.
+    """``(time_s, stage_px, notes)`` of ``frames`` from the recording's timestamps and acquisition metadata; either is ``None`` when absent.
 
-    ``time_s`` is the camera timestamp relative to the recording's first saved
-    frame.  It is used only when the saved-frame rows of the camera metadata
-    match the frame count of ``dataset`` one to one.
+    ``time_s`` is a video's presentation timestamp (``FrameReader.times``) or
+    an HDF5 recording's camera timestamp, relative to the first frame, and
+    ``notes["time_source"]`` says which.  Camera timestamps are used only
+    when the saved-frame rows of the camera metadata match the frame count of
+    ``dataset`` one to one.
 
     ``stage_px`` is the stage position at each frame in image pixels, such
     that ``image position - stage_px`` is the world position: the substrate
@@ -231,10 +234,14 @@ def read_recording_motion(recording: Path, dataset: str, frames: np.ndarray) -> 
     notes: dict[str, Any] = {}
     frames = np.asarray(frames, dtype=np.int64)
     try:
-        with h5py.File(recording, "r") as handle:
-            total = int(handle[dataset].shape[0])
-            times = _saved_frame_times(handle, total, notes)
-    except (OSError, KeyError) as error:
+        with open_frames(recording, dataset) as reader:
+            total, times = reader.frame_count, reader.times
+        if times is not None:
+            notes["time_source"] = {"source": "video presentation timestamps", "origin": "the video's first frame"}
+        else:
+            with h5py.File(recording, "r") as handle:
+                times = _saved_frame_times(handle, total, notes)
+    except (OSError, KeyError, ValueError) as error:
         notes["error"] = f"recording unreadable: {type(error).__name__}: {error}"
         return None, None, notes
     if len(frames) and (frames.min() < 0 or frames.max() >= total):
@@ -266,6 +273,7 @@ def _saved_frame_times(handle: h5py.File, total: int, notes: dict[str, Any]) -> 
     if total > 1 and not (np.diff(seconds) > 0).all():
         notes["time"] = "camera timestamps are not increasing"
         return None
+    notes["time_source"] = {"source": "camera timestamps", "dataset": f"{CAMERA_GROUP}/img_timestamp", "origin": "the recording's first saved frame"}
     return seconds
 
 
@@ -331,11 +339,11 @@ def export(
 
     ``about`` is the caller's part of ``export.json`` (workspace, setup,
     models, app revision, creation time).  Lengths are in µm when
-    ``pixel_size_um`` is given, else in pixels.  Time comes from the camera
-    timestamps, else from ``fps``, else it is unknown (null).  Velocity is in
-    the world frame when the recording has stage positions that calibrate
-    against the image, else in the image frame; ``export.json``'s
-    ``velocity`` says which and why.
+    ``pixel_size_um`` is given, else in pixels.  Time comes from a video's
+    presentation timestamps or the camera timestamps, else from ``fps``, else
+    it is unknown (null).  Velocity is in the world frame when the recording
+    has stage positions that calibrate against the image, else in the image
+    frame; ``export.json``'s ``velocity`` says which and why.
     """
 
     frames = np.asarray(frames, dtype=np.int64)
@@ -344,7 +352,7 @@ def export(
     stamps, stage, notes = read_recording_motion(recording, dataset, frames)
     if stamps is not None:
         time_s = stamps
-        time_info: dict[str, Any] = {"source": "camera timestamps", "dataset": f"{CAMERA_GROUP}/img_timestamp", "origin": "the recording's first saved frame"}
+        time_info: dict[str, Any] = dict(notes["time_source"])
         if len(stamps) > 1:
             time_info["measured_fps"] = float((len(stamps) - 1) / (stamps[-1] - stamps[0]))
     elif fps:

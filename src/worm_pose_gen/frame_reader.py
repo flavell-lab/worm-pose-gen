@@ -10,13 +10,14 @@ HDF5 recording (a ``[T,H,W]`` dataset, one frame per chunk) and for a video
 A video is indexed once: its packets are demuxed without decoding, and
 frame ``k`` is the ``k``-th presentation timestamp in display order, so a
 frame is the same image whatever order frames are read in, with B-frames
-and variable frame rate too.  The index is cached under the data
-directory's cache and rebuilt when the file's size or modification time
-changes.  A frame is decoded by seeking to the keyframe at or before it
-and decoding forward to its timestamp; a read of the frame after the last
-decoded one, or of a later frame of its group of pictures, decodes forward
-without seeking, so consecutive reads cost one decode each.  Decoded frames
-are kept in a small LRU cache.
+and variable frame rate too; the timestamps are also the frames' times
+(``times``).  The index is cached under the data directory's cache and
+rebuilt when the file's size or modification time changes.  A frame is
+decoded by seeking to the keyframe at or before it and decoding forward to
+its timestamp; a read of the frame after the last decoded one, or of a
+later frame of its group of pictures, decodes forward without seeking, so
+consecutive reads cost one decode each.  Decoded frames are kept in a small
+LRU cache.
 
 Frames are decoded to 8-bit gray through swscale, pixel for pixel what
 ``ffmpeg -pix_fmt gray`` (the old conversion to HDF5) wrote.
@@ -25,6 +26,7 @@ Frames are decoded to 8-bit gray through swscale, pixel for pixel what
 from __future__ import annotations
 
 from collections import OrderedDict
+from fractions import Fraction
 import hashlib
 import operator
 from pathlib import Path
@@ -44,7 +46,7 @@ DATASET_PATH = "/img_nir"
 HDF5_SUFFIXES = (".h5", ".hdf5")
 VIDEO_SUFFIXES = (".avi", ".mp4")
 INDEX_DIR = CACHE_DIR / "video_index"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 # Decoded frames kept per video reader (about 90 frames of 968x732).
 CACHE_BYTES = 64 * 2**20
 # Decoder threads per video: frame threads speed H.264 up about as many times (130 frames/s single-threaded).
@@ -75,6 +77,9 @@ class FrameReader:
     shape: tuple[int, int]
     # Frames per second, when the file records it.
     fps: float | None
+    # Each frame's time in seconds from the first frame, when the frames carry it: a video's presentation
+    # timestamps.  None for HDF5, whose camera timestamps live in the acquisition metadata (export_table).
+    times: NDArray[np.float64] | None
 
     def __getitem__(self, key: int | slice) -> NDArray[np.uint8]:
         if isinstance(key, slice):
@@ -135,6 +140,7 @@ class Hdf5Frames(FrameReader):
         self.shape = (int(self._data.shape[1]), int(self._data.shape[2]))
         fps = self._data.attrs.get("fps")
         self.fps = None if fps is None else float(fps)
+        self.times = None
 
     def _frame(self, index: int) -> NDArray[np.uint8]:
         with self._lock:
@@ -150,11 +156,14 @@ class Hdf5Frames(FrameReader):
 
 
 class VideoIndex:
-    """A video's frames in display order: presentation timestamps (stream time base) and keyframe flags, plus its size and rate."""
+    """A video's frames in display order: presentation timestamps (in ``time_base`` seconds) and keyframe flags, plus its size and rate."""
 
-    def __init__(self, pts: NDArray[np.int64], keyframe: NDArray[np.bool_], shape: tuple[int, int], fps: float | None) -> None:
+    def __init__(
+        self, pts: NDArray[np.int64], keyframe: NDArray[np.bool_], time_base: Fraction, shape: tuple[int, int], fps: float | None
+    ) -> None:
         self.pts = pts
         self.keyframe = keyframe
+        self.time_base = time_base
         self.shape = shape
         self.fps = fps
 
@@ -174,6 +183,7 @@ class VideoIndex:
                 timestamps.append(timestamp)
                 keyframes.append(packet.is_keyframe)
             rate = stream.average_rate or stream.guessed_rate
+            time_base = Fraction(stream.time_base)
             shape = (int(stream.codec_context.height), int(stream.codec_context.width))
         if not timestamps:
             raise ValueError(f"{path} holds no frames")
@@ -181,7 +191,7 @@ class VideoIndex:
         pts = np.asarray(timestamps, dtype=np.int64)[order]
         if np.any(np.diff(pts) == 0):
             raise ValueError(f"{path}: two frames share a timestamp")
-        return cls(pts, np.asarray(keyframes, dtype=bool)[order], shape, None if rate is None else float(rate))
+        return cls(pts, np.asarray(keyframes, dtype=bool)[order], time_base, shape, None if rate is None else float(rate))
 
     @classmethod
     def load(cls, path: Path) -> VideoIndex:
@@ -194,7 +204,11 @@ class VideoIndex:
             with np.load(cache) as archive:
                 if np.array_equal(archive["stamp"], stamp):
                     fps = float(archive["fps"])
-                    return cls(archive["pts"], archive["keyframe"], tuple(int(v) for v in archive["shape"]), None if np.isnan(fps) else fps)
+                    numerator, denominator = (int(v) for v in archive["time_base"])
+                    return cls(
+                        archive["pts"], archive["keyframe"], Fraction(numerator, denominator),
+                        tuple(int(v) for v in archive["shape"]), None if np.isnan(fps) else fps,
+                    )
         except (OSError, KeyError, ValueError):
             pass
         index = cls.build(path)
@@ -205,7 +219,8 @@ class VideoIndex:
             with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=f"{cache.name}.", suffix=".partial", delete=False) as handle:
                 temporary = Path(handle.name)
                 np.savez(
-                    handle, stamp=stamp, pts=index.pts, keyframe=index.keyframe, shape=np.array(index.shape),
+                    handle, stamp=stamp, pts=index.pts, keyframe=index.keyframe,
+                    time_base=np.array([index.time_base.numerator, index.time_base.denominator]), shape=np.array(index.shape),
                     fps=np.nan if index.fps is None else index.fps,
                 )
             temporary.replace(cache)
@@ -224,6 +239,7 @@ class VideoFrames(FrameReader):
         self.frame_count = len(self.index.pts)
         self.shape = self.index.shape
         self.fps = self.index.fps
+        self.times = (self.index.pts - self.index.pts[0]).astype(np.float64) * float(self.index.time_base)
         positions = np.arange(self.frame_count)
         # The keyframe at or before each frame (the first frame when none is).
         self._key_before = np.maximum.accumulate(np.where(self.index.keyframe, positions, 0))

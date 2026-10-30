@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the promoted segmenter over a stretch of a recording and write a video.
 
-Frames are read from the HDF5 recording in slabs, flat-fielded with the same
+Frames are read from the recording in slabs, flat-fielded with the same
 correction the labeling app uses (estimated once per recording and cached
 under the dataset root), pushed through the network in batches, and stitched
 into an MP4: the flat-fielded frame in gray, the worm mask (probability at or
@@ -26,7 +26,6 @@ import json
 from pathlib import Path
 import time
 
-import h5py
 import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw
@@ -35,7 +34,7 @@ import torch
 from worm_pose_gen.classical import _erode, _largest_component
 from worm_pose_gen.flat_field import apply_flat_field
 from worm_pose_gen.mask_fit import fill_narrow_holes
-from worm_pose_gen.recordings import DATASET_PATH, RecordingSource
+from worm_pose_gen.recordings import RecordingSource
 from worm_pose_gen.run_records import checkpoint_fingerprint, utc_now
 from worm_pose_gen.settings import CACHE_DIR
 from worm_pose_gen.segmenter import load_segmenter
@@ -107,63 +106,61 @@ def main() -> int:
     field_seconds = time.perf_counter()
     field = source.flat_field()
     field_seconds = time.perf_counter() - field_seconds
-    with h5py.File(args.recording, "r") as handle:
-        dataset = handle[DATASET_PATH]
-        total = int(dataset.shape[0])
-        frames_shape = tuple(int(v) for v in dataset.shape[1:])
-        start = max(0, args.start)
-        stop = min(total, start + args.frames)
-        if stop <= start:
-            raise SystemExit(f"no frames in [{start}, {stop}) of {total}")
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"{args.recording.stem}_f{start:06d}-{stop - 1:06d}" + (f"_x{args.scale:g}" if args.scale != 1.0 else "")
-        video_path = args.output_dir / f"{stem}.mp4"
-        writer = imageio.get_writer(
-            str(video_path), fps=args.fps, codec="libx264", quality=args.quality, macro_block_size=1,
-            ffmpeg_params=["-pix_fmt", "yuv420p"],
-        )
-        rows = []
-        timing = {"read": 0.0, "flat_field": 0.0, "network": 0.0, "render": 0.0}
-        try:
-            for slab_start in range(start, stop, args.slab):
-                slab_stop = min(stop, slab_start + args.slab)
-                t0 = time.perf_counter()
-                raw = np.asarray(dataset[slab_start:slab_stop], dtype=np.uint8)
-                t1 = time.perf_counter()
-                corrected = np.stack([
-                    np.clip(np.rint(apply_flat_field(frame, field, clip=(0.0, 255.0))), 0, 255).astype(np.uint8)
-                    for frame in raw
-                ])
-                t2 = time.perf_counter()
-                probability = module.predict_probability_batch(corrected, batch_size=args.batch_size)
-                if module.device.type == "cuda":
-                    torch.cuda.synchronize()
-                t3 = time.perf_counter()
-                for offset, (frame, prob) in enumerate(zip(corrected, probability)):
-                    index = slab_start + offset
-                    raw_mask = prob >= args.threshold
-                    uncertain_pixels = int(((prob > UNCERTAIN_BAND[0]) & (prob < UNCERTAIN_BAND[1])).sum())
-                    components, extra_pixels = component_stats(raw_mask)
-                    worm, filled_pixels = fill_narrow_holes(raw_mask, args.hole_radius, device=module.device) if args.fill_holes else (raw_mask, 0)
-                    worm_pixels = int(worm.sum())
-                    caption = (
-                        f"{args.recording.stem} frame {index}  worm {worm_pixels} px  raw components {components}  "
-                        f"outside largest {extra_pixels} px  filled {filled_pixels} px"
-                    )
-                    writer.append_data(render(frame, prob, worm, caption, show_uncertain=args.show_uncertain, scale=args.scale))
-                    rows.append({
-                        "frame_index": index, "worm_pixels": worm_pixels, "raw_worm_pixels": int(raw_mask.sum()),
-                        "uncertain_pixels": uncertain_pixels, "components": components,
-                        "pixels_outside_largest_component": extra_pixels, "pixels_filled": filled_pixels,
-                    })
-                t4 = time.perf_counter()
-                timing["read"] += t1 - t0
-                timing["flat_field"] += t2 - t1
-                timing["network"] += t3 - t2
-                timing["render"] += t4 - t3
-                print(f"frames {slab_start}-{slab_stop - 1}: network {(t3 - t2) / (slab_stop - slab_start) * 1000:.1f} ms/frame", flush=True)
-        finally:
-            writer.close()
+    total = source.frame_count
+    frames_shape = source.shape
+    start = max(0, args.start)
+    stop = min(total, start + args.frames)
+    if stop <= start:
+        raise SystemExit(f"no frames in [{start}, {stop}) of {total}")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{args.recording.stem}_f{start:06d}-{stop - 1:06d}" + (f"_x{args.scale:g}" if args.scale != 1.0 else "")
+    video_path = args.output_dir / f"{stem}.mp4"
+    writer = imageio.get_writer(
+        str(video_path), fps=args.fps, codec="libx264", quality=args.quality, macro_block_size=1,
+        ffmpeg_params=["-pix_fmt", "yuv420p"],
+    )
+    rows = []
+    timing = {"read": 0.0, "flat_field": 0.0, "network": 0.0, "render": 0.0}
+    try:
+        for slab_start in range(start, stop, args.slab):
+            slab_stop = min(stop, slab_start + args.slab)
+            t0 = time.perf_counter()
+            raw = source.frames[slab_start:slab_stop]
+            t1 = time.perf_counter()
+            corrected = np.stack([
+                np.clip(np.rint(apply_flat_field(frame, field, clip=(0.0, 255.0))), 0, 255).astype(np.uint8)
+                for frame in raw
+            ])
+            t2 = time.perf_counter()
+            probability = module.predict_probability_batch(corrected, batch_size=args.batch_size)
+            if module.device.type == "cuda":
+                torch.cuda.synchronize()
+            t3 = time.perf_counter()
+            for offset, (frame, prob) in enumerate(zip(corrected, probability)):
+                index = slab_start + offset
+                raw_mask = prob >= args.threshold
+                uncertain_pixels = int(((prob > UNCERTAIN_BAND[0]) & (prob < UNCERTAIN_BAND[1])).sum())
+                components, extra_pixels = component_stats(raw_mask)
+                worm, filled_pixels = fill_narrow_holes(raw_mask, args.hole_radius, device=module.device) if args.fill_holes else (raw_mask, 0)
+                worm_pixels = int(worm.sum())
+                caption = (
+                    f"{args.recording.stem} frame {index}  worm {worm_pixels} px  raw components {components}  "
+                    f"outside largest {extra_pixels} px  filled {filled_pixels} px"
+                )
+                writer.append_data(render(frame, prob, worm, caption, show_uncertain=args.show_uncertain, scale=args.scale))
+                rows.append({
+                    "frame_index": index, "worm_pixels": worm_pixels, "raw_worm_pixels": int(raw_mask.sum()),
+                    "uncertain_pixels": uncertain_pixels, "components": components,
+                    "pixels_outside_largest_component": extra_pixels, "pixels_filled": filled_pixels,
+                })
+            t4 = time.perf_counter()
+            timing["read"] += t1 - t0
+            timing["flat_field"] += t2 - t1
+            timing["network"] += t3 - t2
+            timing["render"] += t4 - t3
+            print(f"frames {slab_start}-{slab_stop - 1}: network {(t3 - t2) / (slab_stop - slab_start) * 1000:.1f} ms/frame", flush=True)
+    finally:
+        writer.close()
     source.close()
     n = len(rows)
     worm_counts = np.array([r["worm_pixels"] for r in rows])
