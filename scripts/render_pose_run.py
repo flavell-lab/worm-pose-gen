@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from worm_pose_gen.recordings import RecordingSource
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.pose_run import clean_mask, cleanup_options, draw_residual, render_tube, residual_caption, residual_rows, write_overlay_video
 from worm_pose_gen.settings import CACHE_DIR
 from worm_pose_gen.segmenter import load_segmenter
@@ -66,7 +67,7 @@ def main() -> int:
         if args.video and (args.force or not video_path.exists()):
             started = time.perf_counter()
             write_overlay_video(
-                video_path, source.frames, field, arrays, caption_prefix=recording.stem,
+                video_path, source.frames, field, arrays, caption_prefix=recording_name(recording),
                 fps=args.fps, scale=args.scale, quality=args.quality, slab=args.slab, device=device,
             )
             print(f"wrote {video_path} in {time.perf_counter() - started:.0f} s", flush=True)

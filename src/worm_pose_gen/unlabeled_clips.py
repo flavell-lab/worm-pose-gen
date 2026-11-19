@@ -34,6 +34,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .frame_reader import open_frames
+from .recording_files import recording_name
 from .temporal_context import MAX_LAG
 
 
@@ -44,13 +45,13 @@ FLAT_FIELDS = "flat_fields"
 
 @dataclass(frozen=True)
 class Segment:
-    recording: str   # path of the HDF5 file
+    recording: str   # path of the recording
     start: int       # first frame of the segment in the recording
     length: int
 
     @property
     def name(self) -> str:
-        return f"{Path(self.recording).stem}_{self.start:06d}"
+        return f"{recording_name(self.recording)}_{self.start:06d}"
 
 
 def segment_allowed(
@@ -58,7 +59,7 @@ def segment_allowed(
 ) -> bool:
     """Whether no frame of ``start .. start + length - 1`` is excluded (``excluded(recording, frame)`` checks every frame)."""
 
-    if Path(recording).stem in set(excluded_recordings):
+    if recording_name(recording) in set(excluded_recordings):
         return False
     return not any(excluded(recording, frame) for frame in range(start, start + length))
 
@@ -80,9 +81,9 @@ def plan_segments(
     seen: set[str] = set()
     for path, total in recordings:
         # A recording copied under two roots is one recording.
-        if Path(path).stem in excluded_recordings | seen or total < length:
+        if recording_name(path) in excluded_recordings | seen or total < length:
             continue
-        seen.add(Path(path).stem)
+        seen.add(recording_name(path))
         starts: list[int] = []
         for _ in range(per_recording * attempts):
             if len(starts) == per_recording:
@@ -149,7 +150,7 @@ def build_store(
     (root / FLAT_FIELDS).mkdir(parents=True, exist_ok=True)
     if flat_field_cache is not None:
         for path in recordings:
-            cached = Path(flat_field_cache) / f"{Path(path).stem}.npz"
+            cached = Path(flat_field_cache) / f"{recording_name(path)}.npz"
             if cached.exists() and not (root / FLAT_FIELDS / cached.name).exists():
                 shutil.copy2(cached, root / FLAT_FIELDS / cached.name)
     counts: list[tuple[str, int]] = []
@@ -179,7 +180,7 @@ def build_store(
                 else:
                     failed[segment.name] = error
             log(f"{len(written)} segments written, {len(failed)} failed")
-    written.sort(key=lambda s: (Path(s.recording).stem, s.start))
+    written.sort(key=lambda s: (recording_name(s.recording), s.start))
     index = {
         "segments": [asdict(s) for s in written], "length": length, "per_recording": per_recording, "seed": seed,
         "dataset": dataset, "max_lag": MAX_LAG, "unreadable_recordings": unreadable, "failed_segments": failed,
@@ -222,7 +223,7 @@ class ClipStore:
         return self._arrays[index]
 
     def recordings(self) -> list[str]:
-        return sorted({Path(s.recording).stem for s in self.segments})
+        return sorted({recording_name(s.recording) for s in self.segments})
 
     def centres(self, index: int, reach: int, max_lag: int = MAX_LAG) -> range:
         """Positions in segment ``index`` whose window (``±reach`` frames, each with ``±max_lag`` context) fits."""

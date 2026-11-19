@@ -53,6 +53,7 @@ from scipy import ndimage
 
 from .body_targets import OVERLAP_ARC_DIAMETERS, render_body_targets, self_contact
 from .latent import cubic_bspline_basis
+from .recording_files import recording_name
 from .segmenter import IGNORE_LABEL
 
 
@@ -580,9 +581,9 @@ def min_bend_radius(centerline_xy: NDArray[np.generic]) -> float:
 
 
 def _clip_windows(manifest: dict[str, Any], recording: str, margin: int) -> list[tuple[int, int]]:
-    name = Path(recording).stem
+    name = recording_name(recording)
     return [(c["start"] - margin, c["start"] + c["frames"] + margin)
-            for c in manifest["clips"] if Path(c["recording"]).stem == name]
+            for c in manifest["clips"] if recording_name(c["recording"]) == name]
 
 
 class Source:
@@ -594,7 +595,7 @@ class Source:
         self.path = Path(workspace)
         info = json.loads((self.path / "workspace.json").read_text())
         self.recording = str(info["recording"])
-        self.name = Path(self.recording).stem
+        self.name = recording_name(self.recording)
         self.shape = tuple(int(v) for v in info["image_shape"])
         with np.load(self.path / "state.npz") as state:
             self.frame_index = state["frame_index"].astype(np.int64)

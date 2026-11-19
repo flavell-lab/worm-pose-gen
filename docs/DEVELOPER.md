@@ -42,9 +42,17 @@ printed `ssh` command goes through the login node to the job's node, and
 running after the interactive job ends.
 
 **Recordings.** A recording folder is searched two levels deep for `.h5`
-recordings and `.avi` and `.mp4` videos; each new file is checked in the
+recordings, `.avi` and `.mp4` videos and the lab raw-data archive's
+datasets (`<uuid>/dataset.zarr`, a Zarr v3 store; flv-c-transfer
+`docs/archive_spec.md`); each new recording is checked in the
 background, and one that cannot be read says why (damaged on disk, or an
-HDF5 compression plugin that is not installed). A video is read in place
+HDF5 compression plugin that is not installed). An archive store is read
+through `worm_pose_gen.recording_files`: its `behavior` group under the NIR
+h5's names (`behavior/nir` is `/img_nir`; stage, nose landmarks and camera
+timestamps as in the h5), through the `zarrs` codec pipeline. A recording
+is named by `recording_name`: a file's stem, or for a store, which is
+always `dataset.zarr`, its folder (the dataset's uuid; a `by-prj/<project>/<uid>`
+link resolves to it). Caches, workspaces and exports use that name. A video is read in place
 (`frame_reader`, through PyAV): it is indexed once, the first time it is
 opened, and the index is cached in the data directory's `cache/video_index`
 (rebuilt when the file changes). A frame read out of order takes about

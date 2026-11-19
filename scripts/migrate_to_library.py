@@ -62,7 +62,8 @@ from worm_pose_gen.library import (
 from worm_pose_gen.library.datasets import SPLITS, fingerprint
 from worm_pose_gen.library.labels import MAX_LAG, LabelRecord
 from worm_pose_gen.library.roots import write_json
-from worm_pose_gen.library.setups import log_default, recording_id
+from worm_pose_gen.library.setups import log_default
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.library.targets import describe_body, write_targets
 from worm_pose_gen.segmentation_dataset import DEFAULT_DATASET_ROOT
 from worm_pose_gen.workspace import DEFAULT_WORKSPACES_ROOT, utc_now
@@ -109,7 +110,7 @@ def live_samples(stores: list[Path]) -> dict[tuple[str, int], dict[str, Any]]:
         index = json.loads(index_path.read_text())
         print(f"{store}: {len(index)} live samples", flush=True)
         for sample_id, record in index.items():
-            key = (recording_id(record["source_path"]), int(record["frame_index"]))
+            key = (recording_name(record["source_path"]), int(record["frame_index"]))
             candidate = {**record, "sample_id": sample_id, "store": store, "others": []}
             previous = chosen.get(key)
             if previous is None:

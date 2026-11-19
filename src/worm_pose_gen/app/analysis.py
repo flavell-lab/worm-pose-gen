@@ -56,6 +56,7 @@ from ..batch_fit import PRESETS
 from ..jobs import FINISHED_STATES, JobRecord, JobSpec
 from .images import data_url
 from ..library.setups import ROLE_OUTPUTS
+from ..recording_files import recording_name
 from ..recordings import RecordingInfo, list_recordings
 from ..workspace import Workspace, _write_json_atomic, list_workspaces, utc_now
 from .exporting import list_exports
@@ -269,7 +270,7 @@ def analysis_job(app: AppState, name: str, payload: dict[str, Any]) -> tuple[Job
     spec = JobSpec(
         kind=ANALYSE_JOB_KIND,
         params={"stages": stages, "params": params, "setup": setup_ref, "models": settings["models"], "mask_source": mask_source, "pipeline": values},
-        workspace=name, frames=[int(v) for v in workspace.info.frames], label=f"Analyse {recording.stem}",
+        workspace=name, frames=[int(v) for v in workspace.info.frames], label=f"Analyse {recording_name(recording)}",
     )
     return spec, analysis_command(workspace.path, stages, params)
 
@@ -404,7 +405,7 @@ def status(app: AppState, name: str, jobs: list[JobRecord] | None = None, opened
     else:
         state = "exported" if exports else "reviewed"
     return {
-        "name": name, "recording": str(workspace.recording), "recording_id": workspace.recording.stem,
+        "name": name, "recording": str(workspace.recording), "recording_id": recording_name(workspace.recording),
         "frames": [int(v) for v in workspace.info.frames], "step": int(workspace.info.step), "frame_count": workspace.n,
         "image_shape": workspace.info.image_shape, "setup": setup,
         "models": _model_names(libraries, settings.get("models") or {}),
@@ -440,7 +441,7 @@ def home(app: AppState, setup_ref: str | None) -> dict[str, Any]:
     for info in infos:
         name = workspaces.get(str(Path(info.path).resolve()))
         rows.append({
-            "id": library.recording_id(info.path), "path": info.path, "frames": info.frames, "readable": info.readable, "error": info.error,
+            "id": recording_name(info.path), "path": info.path, "frames": info.frames, "readable": info.readable, "error": info.error,
             "pending": info.pending,
             "workspace": name, "status": None if name is None else status(app, name, jobs, opened),
         })

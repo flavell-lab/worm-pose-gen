@@ -24,6 +24,7 @@ import numpy as np
 from worm_pose_gen.classical import ClassicalConfig, segment_dark_ridge
 from worm_pose_gen.flat_field import apply_flat_field, estimate_flat_field
 from worm_pose_gen.frame_reader import DATASET_PATH, open_frames
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.mask_fit import (
     MaskFitConfig,
     fill_narrow_holes,
@@ -68,7 +69,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "recording": args.recording.stem,
+                    "recording": recording_name(args.recording),
                     "dark_region_fraction": float(dark.mean()),
                     "gain_max": float(field.gain.max()),
                 }

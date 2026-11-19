@@ -44,6 +44,7 @@ import torch
 
 from .body_net import OUTPUTS
 from .body_proposal import END_THRESHOLD, OVERLAP_THRESHOLD, _probabilities, network_inputs
+from .recording_files import recording_name
 from .settings import CACHE_DIR
 from .temporal_context import MAX_LAG
 
@@ -69,7 +70,7 @@ class Clip:
 
     @property
     def recording_name(self) -> str:
-        return Path(self.recording).stem
+        return recording_name(self.recording)
 
 
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
@@ -91,12 +92,12 @@ def excluded(recording: str, frame: int, path: Path = DEFAULT_MANIFEST) -> bool:
     """Whether unlabeled-video training must not use this frame (a test or ood recording, or near an evaluation clip)."""
 
     manifest = load_manifest(path)
-    name = Path(recording).stem
+    name = recording_name(recording)
     if name in manifest["excluded_recordings"]:
         return True
     margin = int(manifest["exclusion_margin"])
     return any(
-        Path(c["recording"]).stem == name and c["start"] - margin - MAX_LAG <= frame < c["start"] + c["frames"] + margin + MAX_LAG
+        recording_name(c["recording"]) == name and c["start"] - margin - MAX_LAG <= frame < c["start"] + c["frames"] + margin + MAX_LAG
         for c in manifest["clips"]
     )
 

@@ -110,6 +110,7 @@ from .propagation import (
     warm_schedule,
 )
 from .recording_prior import RecordingPrior, bootstrap_prior_from_masks
+from .recording_files import recording_name
 from .run_records import checkpoint_fingerprint, git_revision, utc_now
 from .settings import CACHE_DIR
 from .workspace import MASK_CHUNK_ROWS, pack_mask
@@ -1170,7 +1171,7 @@ def prior_cache_path(params: PriorParams, recording: Path, width_coefficients: i
         return None
     # A prior bootstrapped from the body-field network's masks is cached apart from the segmenter's.
     source = "" if params.mask_source == "segmenter" else f"_{params.mask_source}"
-    return Path(params.prior_cache) / f"{Path(recording).stem}_k{width_coefficients}{source}.json"
+    return Path(params.prior_cache) / f"{recording_name(recording)}_k{width_coefficients}{source}.json"
 
 
 def cached_prior(recording: str | Path, cache: str | Path = DEFAULT_PRIOR_CACHE) -> RecordingPrior | None:
