@@ -3,8 +3,8 @@
 Schema verified against ConfocalTrackerControl.jl commit
 359832f79da8f037324e3d824f2909e21e176043, src/gui_loop.jl and src/data.jl:
 https://github.com/flavell-lab/ConfocalTrackerControl.jl/tree/359832f79da8f037324e3d824f2909e21e176043/src
-Julia writes [landmark, coordinate, time], exposed by h5py as [time,
-coordinate, landmark]. Landmarks are nose, mid, pharynx; coordinates are
+Julia writes [landmark, coordinate, time], exposed by h5py (and kept so
+in the archive store's behavior group) as [time, coordinate, landmark]. Landmarks are nose, mid, pharynx; coordinates are
 one-based image x, y, confidence. Features and images are appended together.
 Stage coordinates are never used as image landmarks.
 """
@@ -14,11 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-import h5py
 import numpy as np
 from numpy.typing import NDArray
 
-from .frame_reader import VIDEO_SUFFIXES
+from .recording_files import open_metadata, recording_kind
 
 
 @dataclass(frozen=True)
@@ -32,7 +31,7 @@ class HeadTracking:
     provenance: dict[str, Any]
 
 
-def _rows(dataset: h5py.Dataset, indices: NDArray[np.int64]) -> np.ndarray:
+def _rows(dataset: Any, indices: NDArray[np.int64]) -> np.ndarray:
     """Read only requested rows, preserving duplicates and caller ordering."""
     unique, inverse = np.unique(indices, return_inverse=True)
     return np.asarray(dataset[unique])[inverse]
@@ -78,11 +77,11 @@ def read_head_tracking(
     }
     result = HeadTracking(xy, valid, confidence, indices, ids, timestamps, provenance)
     # A video carries no landmarks: it is rejected as an HDF5 recording without them is.
-    if Path(recording_path).suffix.lower() in VIDEO_SUFFIXES:
+    if recording_kind(recording_path) not in ('h5', 'archive'):
         provenance['reason'] = 'missing_img_nir_or_pos_feature'
         return result
     try:
-        with h5py.File(recording_path, 'r') as h:
+        with open_metadata(recording_path) as h:
             if '/img_nir' not in h or '/pos_feature' not in h:
                 provenance['reason'] = 'missing_img_nir_or_pos_feature'
                 return result

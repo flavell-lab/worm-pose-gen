@@ -34,6 +34,7 @@ import torch
 from worm_pose_gen.classical import _erode, _largest_component
 from worm_pose_gen.flat_field import apply_flat_field
 from worm_pose_gen.mask_fit import fill_narrow_holes
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.recordings import RecordingSource
 from worm_pose_gen.run_records import checkpoint_fingerprint, utc_now
 from worm_pose_gen.settings import CACHE_DIR
@@ -113,7 +114,7 @@ def main() -> int:
     if stop <= start:
         raise SystemExit(f"no frames in [{start}, {stop}) of {total}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{args.recording.stem}_f{start:06d}-{stop - 1:06d}" + (f"_x{args.scale:g}" if args.scale != 1.0 else "")
+    stem = f"{recording_name(args.recording)}_f{start:06d}-{stop - 1:06d}" + (f"_x{args.scale:g}" if args.scale != 1.0 else "")
     video_path = args.output_dir / f"{stem}.mp4"
     writer = imageio.get_writer(
         str(video_path), fps=args.fps, codec="libx264", quality=args.quality, macro_block_size=1,
@@ -144,7 +145,7 @@ def main() -> int:
                 worm, filled_pixels = fill_narrow_holes(raw_mask, args.hole_radius, device=module.device) if args.fill_holes else (raw_mask, 0)
                 worm_pixels = int(worm.sum())
                 caption = (
-                    f"{args.recording.stem} frame {index}  worm {worm_pixels} px  raw components {components}  "
+                    f"{recording_name(args.recording)} frame {index}  worm {worm_pixels} px  raw components {components}  "
                     f"outside largest {extra_pixels} px  filled {filled_pixels} px"
                 )
                 writer.append_data(render(frame, prob, worm, caption, show_uncertain=args.show_uncertain, scale=args.scale))

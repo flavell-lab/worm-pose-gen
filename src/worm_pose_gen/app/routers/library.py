@@ -30,6 +30,7 @@ from . import get_state
 from ... import library
 from ...model_eval import DEFAULT_MIN_FIT_IOU, OVERLAP_STATES, overlap_state
 from ..images import data_url, decode_mask_data_url, mask_to_png_values
+from ...recording_files import recording_name
 from ...recordings import list_recordings
 from ..state import AppState, NotFound, _integer
 
@@ -111,13 +112,13 @@ def setup_recordings(ref: str, app: AppState = Depends(get_state)) -> dict[str, 
     for info in infos:
         owner = registered.get(info.path, {}).get("setup")
         if owner is None or owner == ref:  # a file in the folders registered to another setup belongs there
-            rows.append({**info.to_dict(), "id": library.recording_id(info.path), "registered": info.path in registered})
+            rows.append({**info.to_dict(), "id": recording_name(info.path), "registered": info.path in registered})
     return {"setup": ref, "recordings": rows}
 
 
 @router.get("/recording-setup")
 def recording_setup(path: str, app: AppState = Depends(get_state)) -> dict[str, Any]:
-    return {"path": path, "id": library.recording_id(path), "setup": library.setup_for_recording(_libraries(app), path)}
+    return {"path": path, "id": recording_name(path), "setup": library.setup_for_recording(_libraries(app), path)}
 
 
 @router.post("/recordings")
@@ -360,7 +361,7 @@ def save_label(ref: str, payload: dict[str, Any] = Body(...), app: AppState = De
 
             setup = library.get_setup(libraries, collection.setup)
             inputs = read_label_inputs(path, frame, video=setup.video, flat_field_cache=app.config.dataset_root / "flat_fields")
-            recording = library.recording_id(path)
+            recording = recording_name(path)
         else:
             recording = str(payload.get("recording") or "")
             existing = collection.get(recording, frame).load()

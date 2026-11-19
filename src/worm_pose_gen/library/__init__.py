@@ -78,7 +78,7 @@ from .pseudo_sets import PseudoLabelSet, create_pseudo_labels, get_pseudo_labels
 from .roots import LAB_LIBRARY_BY_HOST, Libraries, make_ref, parse_ref
 from .setups import (
     Setup, add_recording_folder, create_setup, defaults_log, get_setup, list_setups,
-    recording_folders, recording_id, recording_sources, register_recording, remove_recording_folder, set_default,
+    recording_folders, recording_sources, register_recording, remove_recording_folder, set_default,
     setup_for_recording, write_setup,
 )
 from .targets import SETUP_DEFAULT, build_targets, cached_meta, load_targets, target_builder
@@ -89,6 +89,6 @@ __all__ = [
     "build_targets", "cached_meta", "create_dataset", "create_model", "create_pseudo_labels", "create_setup", "defaults_log", "evaluation_path",
     "evaluations", "fingerprint", "freeze_benchmark", "get_benchmark", "get_card", "get_pseudo_labels", "get_setup", "labels",
     "list_benchmarks", "list_datasets", "list_models", "list_pseudo_labels", "list_setups", "load_targets", "make_inputs", "make_ref",
-    "parse_ref", "recording_folders", "recording_id", "recording_sources", "register_recording", "remove_recording_folder", "save_evaluation", "set_default",
+    "parse_ref", "recording_folders", "recording_sources", "register_recording", "remove_recording_folder", "save_evaluation", "set_default",
     "setup_for_recording", "target_builder", "trained_on", "training_dir", "weights_path", "write_benchmark", "write_model", "write_setup",
 ]

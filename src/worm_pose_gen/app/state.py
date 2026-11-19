@@ -22,6 +22,7 @@ from ..jobs import JobRunner, LocalGPUBackend, SlurmBackend
 from .. import library
 from ..library import Libraries
 from ..pipeline import WorkspaceBusy, workspace_dataset
+from ..recording_files import is_recording, recording_name
 from ..recordings import DATASET_PATH, RecordingProber, RecordingSource, list_directory, thumbnail_png
 from ..workspace import Workspace, list_workspaces, read_recording_shape
 from .config import AppConfig
@@ -173,7 +174,7 @@ class AppState:
         """
 
         recording = self.recording_path(str(payload["recording"]))
-        if not recording.is_file():
+        if not is_recording(recording):
             raise ValueError(f"recording {recording} does not exist")
         settings: dict[str, Any] = {}
         # The recording's own dataset (its setup's); /img_nir needs no setting.
@@ -185,7 +186,8 @@ class AppState:
             raise ValueError(f"{recording} cannot be read as a recording with dataset {dataset}")
         first, last = _integer(payload, "first", 0), _integer(payload, "last", shape[0] - 1)
         step = _integer(payload, "step", 1)
-        base = recording.stem if (first, last, step) == (0, shape[0] - 1, 1) else f"{recording.stem}_f{first}-{last}"
+        name = recording_name(recording)
+        base = name if (first, last, step) == (0, shape[0] - 1, 1) else f"{name}_f{first}-{last}"
         name = next(candidate for candidate in (base, *(f"{base}-{k}" for k in range(2, 1000))) if not self.workspace_path(candidate).exists())
         Workspace.create(self.config.workspaces_root, _validate_name(name), recording, first, last, step, settings=settings or None)
         return self.view(name)
@@ -214,13 +216,13 @@ class AppState:
         return resolved
 
     def recording_dataset(self, path: Path) -> str:
-        """The HDF5 dataset of a recording's frames: its setup's video dataset (ignored for a video)."""
+        """The dataset of a recording's frames (h5 names, also for an archive store): its setup's video dataset (ignored for a video)."""
 
         setup = library.setup_for_recording(self.libraries, path)
         return str(library.get_setup(self.libraries, setup).video["dataset_path"]) if setup is not None else DATASET_PATH
 
     def browse(self, path: str | None, all_files: bool = False) -> dict[str, Any]:
-        """Directories, HDF5 files and videos under ``path`` (the first recording folder when none is given), with the recording folders as shortcuts."""
+        """Directories, HDF5 files, archive stores and videos under ``path`` (the first recording folder when none is given), with the recording folders as shortcuts."""
 
         roots = [root for root in map(Path, library.recording_folders(self.libraries)) if root.is_dir()]
         start = Path(path).expanduser() if path else (roots[0] if roots else Path.home())
@@ -235,7 +237,7 @@ class AppState:
 
     def thumbnail(self, path: str, frame: int, scale: float) -> bytes:
         recording = self.recording_path(path)
-        if not recording.is_file():
+        if not is_recording(recording):
             raise NotFound(f"no recording at {path}")
         try:
             # Thumbnails never exceed the frame: ``scale`` above 1 would build a gigapixel image in the server.

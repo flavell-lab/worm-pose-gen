@@ -47,6 +47,7 @@ from .. import edits, frame_search, library
 from ..frame_reader import open_frames
 from ..jobs import JobSpec
 from ..library.roots import locked, read_json, write_json
+from ..recording_files import recording_name
 from ..workspace import utc_now
 from .state import NotFound
 
@@ -187,7 +188,7 @@ def relabel_queue(app: Any, workspace_name: str, frames: Sequence[Any]) -> dict[
         workspace.row_of(frame)
     recording = workspace.recording.resolve()
     setup = _setup_of(app, recording)
-    entries = [{"path": str(recording), "recording": library.recording_id(recording), "frame": frame} for frame in ordered]
+    entries = [{"path": str(recording), "recording": recording_name(recording), "frame": frame} for frame in ordered]
     name = f"Relabel {workspace_name} frames {ordered[0]}–{ordered[-1]}"
     return app.queues.create({"kind": "relabel", "name": name, "setup": setup, "workspace": workspace_name, "entries": entries})
 
@@ -226,7 +227,7 @@ def spread_queue(app: Any, setup_ref: str, paths: Sequence[Any], frames: Any, ty
         if _setup_of(app, path) != setup_ref:
             raise ValueError(f"{path.name} does not belong to {setup_ref}")
         count_frames = _frame_count(path, str(setup.video["dataset_path"]))
-        name = library.recording_id(path)
+        name = recording_name(path)
         recordings.append({"path": str(path), "id": name, "frames": count_frames, "exclude": sorted(labeled.get(name, ()))})
     model = setup.defaults.get("mask")
     if chosen and not model:
@@ -278,7 +279,7 @@ def manifest_queue(app: Any, manifest: Path) -> dict[str, Any]:
     entries = []
     for item in data["frames"]:
         file = files[item["recording"]]
-        entries.append({"path": str(file), "recording": library.recording_id(file), "frame": int(item["frame_index"])})
+        entries.append({"path": str(file), "recording": recording_name(file), "frame": int(item["frame_index"])})
     return app.queues.create({"kind": "manifest", "name": str(data.get("name") or path.parent.name), "setup": setups.pop(), "entries": entries})
 
 

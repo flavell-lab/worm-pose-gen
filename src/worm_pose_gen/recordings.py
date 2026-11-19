@@ -1,19 +1,20 @@
-"""The recordings (HDF5 files and videos): catalog, frame thumbnails, and frames read and flat-fielded.
+"""The recordings (HDF5 files, archive stores and videos): catalog, frame thumbnails, and frames read and flat-fielded.
 
 The Recordings screen and Labeling's New queue need, for every recording
-(``.h5``, ``.avi`` or ``.mp4``) of a setup (in its recording folders or
+(``.h5``, ``.avi`` or ``.mp4`` file, or an archive's ``dataset.zarr`` store,
+:mod:`.recording_files`) of a setup (in its recording folders or
 registered to it), its frame count and image size and whether it can
 actually be read (some recordings hold chunks compressed with an HDF5
 filter plugin that is not installed, and a few files are not HDF5 at all).
 Opening every file to read its shape is slow over network storage (and a
 video is indexed when first opened, :mod:`.frame_reader`), so the per-file
 facts are cached in one JSON index keyed by path; an entry is reused while
-the file's size and modification time are unchanged and refreshed
-otherwise.  Thumbnails are flat-fielded when the field cache holds the
+the file's size and modification time (a store's root ``zarr.json``) are
+unchanged and refreshed otherwise.  Thumbnails are flat-fielded when the field cache holds the
 recording's field and are otherwise the raw frame.
 
-``RecordingSource`` reads one recording's frames (an HDF5 recording or a
-video, through :func:`.frame_reader.open_frames`) and flat-fields
+``RecordingSource`` reads one recording's frames (an HDF5 recording, an
+archive store or a video, through :func:`.frame_reader.open_frames`) and flat-fields
 them with a per-recording correction fitted once from frames spread over
 the recording and cached on disk.
 """
@@ -30,13 +31,15 @@ import tempfile
 import threading
 from typing import Any, Iterable
 
-import h5py
 import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
 from .flat_field import FlatField, apply_flat_field, estimate_flat_field
-from .frame_reader import DATASET_PATH, HDF5_SUFFIXES, VIDEO_SUFFIXES, open_frames
+from .frame_reader import DATASET_PATH, open_frames
+from .recording_files import (
+    ARCHIVE_NAME, HDF5_SUFFIXES, VIDEO_SUFFIXES, is_recording, open_metadata, recording_kind, recording_name, stamp_path,
+)
 from .settings import CACHE_DIR
 
 
@@ -49,7 +52,7 @@ _INDEX_LOCK = threading.Lock()
 
 @dataclass
 class RecordingInfo:
-    """One recording file as the browser shows it."""
+    """One recording as the browser shows it."""
 
     name: str
     path: str
@@ -60,7 +63,7 @@ class RecordingInfo:
     modified_at: str
     readable: bool
     error: str | None
-    # The HDF5 dataset holding the frames (ignored for a video).
+    # The dataset holding the frames, under the h5's names (ignored for a video).
     dataset: str = DATASET_PATH
     # Not opened yet: frames and readability are unknown until a prober has looked.
     pending: bool = False
@@ -70,10 +73,11 @@ class RecordingInfo:
 
 
 def list_directory(path: Path, *, all_files: bool = False) -> dict[str, Any]:
-    """Directories, HDF5 files (kind "h5") and videos (kind "video") directly under ``path``, for the file explorer.
+    """Directories, HDF5 files (kind "h5"), archive stores (kind "archive") and videos (kind "video") directly under ``path``, for the file explorer.
 
     Hidden entries are skipped; unreadable subdirectories are listed but
-    flagged.  With ``all_files`` every other regular file is listed too
+    flagged.  An archive store is a directory but a recording, not a folder
+    to open.  With ``all_files`` every other regular file is listed too
     (kind "file"), for videos stored under other names.
     """
 
@@ -92,10 +96,12 @@ def list_directory(path: Path, *, all_files: bool = False) -> dict[str, Any]:
         if child.name.startswith("."):
             continue
         try:
-            if child.is_dir():
+            if child.is_dir() and recording_kind(child) == "archive":
+                entries.append({"name": child.name, "path": str(child), "kind": "archive", "size_bytes": None, "modified_at": _iso_utc(child.stat().st_mtime), "readable": os.access(child, os.R_OK | os.X_OK)})
+            elif child.is_dir():
                 entries.append({"name": child.name, "path": str(child), "kind": "dir", "size_bytes": None, "modified_at": _iso_utc(child.stat().st_mtime), "readable": os.access(child, os.R_OK | os.X_OK)})
             elif child.is_file():
-                kind = _file_kind(child.suffix.lower()) or ("file" if all_files else None)
+                kind = recording_kind(child) or ("file" if all_files else None)
                 if kind is None:
                     continue
                 stat = child.stat()
@@ -103,11 +109,7 @@ def list_directory(path: Path, *, all_files: bool = False) -> dict[str, Any]:
         except OSError:
             continue
     parent = None if directory.parent == directory else str(directory.parent)
-    return {"path": str(directory), "parent": parent, "entries": entries, "all_files": all_files, "suffixes": [*HDF5_SUFFIXES, *VIDEO_SUFFIXES]}
-
-
-def _file_kind(suffix: str) -> str | None:
-    return "h5" if suffix in HDF5_SUFFIXES else "video" if suffix in VIDEO_SUFFIXES else None
+    return {"path": str(directory), "parent": parent, "entries": entries, "all_files": all_files, "suffixes": [*HDF5_SUFFIXES, *VIDEO_SUFFIXES], "archive_name": ARCHIVE_NAME}
 
 
 def _iso_utc(timestamp: float) -> str:
@@ -147,7 +149,7 @@ def probe_recording(path: Path, dataset: str = DATASET_PATH) -> dict[str, Any]:
 
 
 def _file_stamp(path: Path) -> dict[str, int]:
-    stat = path.stat()
+    stat = stamp_path(path).stat()
     return {"mtime_ns": int(stat.st_mtime_ns), "size": int(stat.st_size)}
 
 
@@ -248,31 +250,43 @@ class RecordingProber:
                 self._queue.remove((path, dataset))
 
 
-# How many folders below a recording folder are searched: ``<folder>/<day>/<recording>.h5`` is two.
+# How many folders below a recording folder are searched: ``<folder>/<day>/<recording>.h5`` is two, as is
+# ``<folder>/<dataset>/dataset.zarr``.
 FOLDER_DEPTH = 2
 
 
 def find_recordings(roots: Iterable[Path], depth: int = FOLDER_DEPTH) -> list[Path]:
-    """Every recording (HDF5 or video file) given as a root or under a root at most ``depth`` folders down (hidden ones skipped), resolved, sorted by name then path.
+    """Every recording (HDF5 or video file, archive store) given as a root or under a root at most ``depth`` folders down (hidden ones skipped), resolved, sorted by name then path.
 
-    Resolving makes a file reached through two roots (one a symlink to the other) one recording.
+    Resolving makes a recording reached through two roots (one a symlink to the other) one recording.
+    An archive store is not searched inside.
     """
 
     found: set[Path] = set()
     for root in roots:
         root = Path(root)
-        if root.is_file():
-            if _file_kind(root.suffix.lower()):
-                found.add(root.resolve())
+        if is_recording(root):
+            found.add(root.resolve())
             continue
         if not root.is_dir():
             continue
-        for level in range(depth + 1):
-            for path in root.glob("/".join(["*"] * (level + 1))):
-                hidden = any(part.startswith(".") for part in path.relative_to(root).parts)
-                if not hidden and _file_kind(path.suffix.lower()) and path.is_file():
-                    found.add(path.resolve())
-    return sorted(found, key=lambda p: (p.stem, str(p)))
+        folders = [root]
+        for _ in range(depth + 1):
+            below = []
+            for folder in folders:
+                try:
+                    children = list(folder.iterdir())
+                except OSError:
+                    continue
+                for path in children:
+                    if path.name.startswith("."):
+                        continue
+                    if is_recording(path):
+                        found.add(path.resolve())
+                    elif path.is_dir():
+                        below.append(path)
+            folders = below
+    return sorted(found, key=lambda p: (recording_name(p), str(p)))
 
 
 def list_recordings(roots: Iterable[Path], *, cache: Path | None = None, dataset: str = DATASET_PATH, probe: bool = True) -> list[RecordingInfo]:
@@ -295,7 +309,7 @@ def list_recordings(roots: Iterable[Path], *, cache: Path | None = None, dataset
             stamp = {"mtime_ns": 0, "size": 0}
         infos.append(
             RecordingInfo(
-                name=path.stem, path=str(path), frames=entry["frames"], height=entry["height"], width=entry["width"],
+                name=recording_name(path), path=str(path), frames=entry["frames"], height=entry["height"], width=entry["width"],
                 size_bytes=int(stamp["size"]), modified_at=_iso_utc(stamp["mtime_ns"] / 1e9), readable=bool(entry["readable"]),
                 error=entry["error"], dataset=dataset, pending=entry is PENDING_FACTS,
             )
@@ -305,11 +319,11 @@ def list_recordings(roots: Iterable[Path], *, cache: Path | None = None, dataset
 
 
 def _read_frame(path: Path, frame: int, dataset: str = DATASET_PATH) -> NDArray[np.uint8]:
-    if path.suffix.lower() not in HDF5_SUFFIXES:
+    if recording_kind(path) not in ("h5", "archive"):
         with open_frames(path) as frames:
             return frames[frame]
-    # An HDF5 frame is read raw (open_frames casts to uint8), so a 16-bit camera's can be rescaled below.
-    with h5py.File(path, "r") as handle:
+    # An HDF5 or archive frame is read raw (open_frames casts to uint8), so a 16-bit camera's can be rescaled below.
+    with open_metadata(path) as handle:
         if dataset not in handle:
             raise KeyError(f"no dataset {dataset}")
         data = handle[dataset]
@@ -328,7 +342,7 @@ def thumbnail_frame(path: Path, frame: int, dataset_root: Path = CACHE_DIR, data
 
     path = Path(path)
     field_cache = Path(dataset_root) / "flat_fields"
-    if (field_cache / f"{path.stem}.npz").exists():
+    if (field_cache / f"{recording_name(path)}.npz").exists():
         source = RecordingSource(path, field_cache, dataset=dataset)
         try:
             _, corrected = source.corrected(int(frame))
@@ -359,7 +373,7 @@ class RecordingSource:
 
     def __init__(self, path: Path, cache_dir: Path, dataset: str = DATASET_PATH) -> None:
         self.path = Path(path)
-        self.name = self.path.stem
+        self.name = recording_name(self.path)
         self.cache_dir = Path(cache_dir)
         self._field_lock = threading.Lock()
         self._field: FlatField | None = None

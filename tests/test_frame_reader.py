@@ -17,7 +17,7 @@ import h5py
 import numpy as np
 
 from worm_pose_gen import frame_reader
-from worm_pose_gen.frame_reader import Hdf5Frames, VideoFrames, VideoIndex, open_frames
+from worm_pose_gen.frame_reader import ArrayFrames, VideoFrames, VideoIndex, open_frames
 
 
 HEIGHT, WIDTH, FRAMES = 48, 64, 60
@@ -356,7 +356,7 @@ def _frames_that_decode(path: Path) -> int:
     return count
 
 
-class Hdf5FramesTests(unittest.TestCase):
+class ArrayFramesTests(unittest.TestCase):
     def test_reads_match_h5py(self) -> None:
         rng = np.random.default_rng(1)
         stack = rng.integers(0, 256, (9, 7, 5), dtype=np.uint8)
@@ -367,7 +367,7 @@ class Hdf5FramesTests(unittest.TestCase):
                 handle.create_dataset("/camera/frames", data=stack.astype(np.uint16) * 3)
                 handle["/img_nir"].attrs["fps"] = 20.0
             with open_frames(path) as reader, h5py.File(path, "r") as handle:
-                self.assertIsInstance(reader, Hdf5Frames)
+                self.assertIsInstance(reader, ArrayFrames)
                 data = handle["/img_nir"]
                 self.assertEqual((reader.frame_count, reader.shape, reader.fps, reader.times), (9, (7, 5), 20.0, None))
                 for k in range(9):

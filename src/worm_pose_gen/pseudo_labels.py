@@ -60,6 +60,8 @@ from typing import Any, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
+from .recording_files import recording_name
+
 
 # Frames stored around an item: every offset lags 1, 4 and 16 need.
 CONTEXT_OFFSETS = (-16, -4, -1, 0, 1, 4, 16)
@@ -372,7 +374,7 @@ class PseudoLabelDataset:
         kinds = [entry["kind"] for entry in self.entries]
         return {
             "counts": {"pseudo": len(self.entries), **{kind: kinds.count(kind) for kind in sorted(set(kinds))}},
-            "recordings": len({Path(entry["recording"]).stem for entry in self.entries}),
+            "recordings": len({recording_name(entry["recording"]) for entry in self.entries}),
         }
 
     def __getitem__(self, index: int) -> dict[str, Any]:

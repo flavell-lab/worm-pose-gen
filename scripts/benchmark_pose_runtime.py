@@ -81,6 +81,7 @@ import numpy as np
 from worm_pose_gen.pipeline import DEFAULT_PRIOR_CACHE
 from worm_pose_gen.settings import RUNS_DIR
 from worm_pose_gen.propagation import continuity_summary
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.run_records import git_revision, timestamp_slug, utc_now
 
 
@@ -113,7 +114,7 @@ def benchmark_clips() -> list[dict[str, Any]]:
     clips = [{k: manifest[name][k] for k in ORDINARY} for name in MANIFEST_CLIPS] + [ORDINARY]
     for clip in clips:
         # The cached prior of the fit's six width coefficients, as fit_recording resolves it by default.
-        prior = DEFAULT_PRIOR_CACHE / f"{Path(clip['recording']).stem}_k6.json"
+        prior = DEFAULT_PRIOR_CACHE / f"{recording_name(clip['recording'])}_k6.json"
         clip.update(prior_file=str(prior), prior_sha256=hashlib.sha256(prior.read_bytes()).hexdigest())
     return clips
 

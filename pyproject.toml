@@ -23,6 +23,8 @@ dependencies = [
     "torch>=2.13.0",
     "torchvision>=0.28.0",
     "uvicorn>=0.52.4",
+    "zarr>=3.4.2",
+    "zarrs>=0.2.3",
 ]
 
 [project.scripts]

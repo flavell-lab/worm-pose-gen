@@ -33,12 +33,12 @@ from pathlib import Path
 import tempfile
 from typing import Any, Callable, Sequence
 
-import h5py
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import ndimage
 
-from .frame_reader import VIDEO_SUFFIXES, open_frames
+from .frame_reader import open_frames
+from .recording_files import open_metadata, recording_kind, recording_name
 from .recordings import RecordingSource
 from .settings import CACHE_DIR
 
@@ -122,9 +122,9 @@ def clean_stage(raw: ArrayLike, max_gap: int = MAX_GAP_FRAMES) -> StageTrack:
 
 def read_stage(recording: Path | str, max_gap: int = MAX_GAP_FRAMES) -> StageTrack:
     # A video carries no stage: it fails as an HDF5 recording without one does.
-    if Path(recording).suffix.lower() in VIDEO_SUFFIXES:
+    if recording_kind(recording) == "video":
         raise KeyError(f"{recording}: no {STAGE_DATASET}")
-    with h5py.File(recording, "r") as handle:
+    with open_metadata(recording) as handle:
         if STAGE_DATASET not in handle:
             raise KeyError(f"{recording}: no {STAGE_DATASET}")
         return clean_stage(np.asarray(handle[STAGE_DATASET]), max_gap)
@@ -353,9 +353,9 @@ def estimate_calibration(
 def recording_calibration(
     recording: Path | str, mask_of: Callable[[int], BoolArray | None] | None = None, cache_dir: Path = DEFAULT_CACHE
 ) -> StageCalibration:
-    """The recording's calibration from ``cache_dir/<stem>.json``, estimated and written there on first use."""
+    """The recording's calibration from ``cache_dir/<name>.json`` (:func:`.recording_files.recording_name`), estimated and written there on first use."""
 
-    path = Path(cache_dir) / f"{Path(recording).stem}.json"
+    path = Path(cache_dir) / f"{recording_name(recording)}.json"
     if path.exists():
         return StageCalibration.load(path)
     calibration = estimate_calibration(recording, mask_of)
@@ -518,11 +518,11 @@ def recording_steps(
 ) -> FloatArray:
     """``[n, 3]`` lag-1 background shifts ``(dx, dy, score)`` from each of ``frames`` to the next, NaN past the last frame.
 
-    Registers (dark-pixel worm masks) the steps that ``cache_dir/<stem>.npz``
+    Registers (dark-pixel worm masks) the steps that ``cache_dir/<name>.npz``
     does not hold yet and adds them to it.
     """
 
-    path = Path(cache_dir) / f"{Path(recording).stem}.npz"
+    path = Path(cache_dir) / f"{recording_name(recording)}.npz"
     rows = np.zeros((0, 5))
     if path.exists():
         with np.load(path) as archive:

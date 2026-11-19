@@ -17,13 +17,16 @@ made it, when, and why, as the promotion log did.
 
 Recordings are the user's, not the setup's: the personal
 ``recording_folders.json`` names folders, each for one setup, that are
-searched for recordings (``.h5``, ``.avi`` and ``.mp4`` files at most two
-folders deep), and the personal ``recordings.json`` names single files
-added by hand.  A recording belongs to the setup it is registered to, else
-to the setup of the folder holding it.  A recording's id is its file name without
-the extension (``2023-06-23-01``): the lab's acquisition names files by date
-and index, so the stem is unique within a setup and survives the file being
-mirrored to another store.
+searched for recordings (``.h5``, ``.avi`` and ``.mp4`` files and archive
+``dataset.zarr`` stores at most two folders deep), and the personal
+``recordings.json`` names single recordings added by hand.  A recording
+belongs to the setup it is registered to, else to the setup of the folder
+holding it.  A recording's id is its name
+(:func:`..recording_files.recording_name`): a file's name without the
+extension (``2023-06-23-01``; the lab's acquisition names files by date and
+index, so the stem is unique within a setup and survives the file being
+mirrored to another store), or an archive store's folder, the dataset's
+uuid.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from typing import Any
 from .roots import (
     Libraries, append_jsonl, check_id, locked, make_ref, parse_ref, read_json, read_jsonl, write_json,
 )
+from ..recording_files import is_recording, recording_name
 from ..workspace import utc_now
 
 
@@ -188,15 +192,6 @@ def defaults_log(libraries: Libraries, setup_ref: str) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- recordings
 
 
-def recording_id(path: str | Path) -> str:
-    """A recording's id: its file name without the extension."""
-
-    name = Path(path).stem
-    if not name or "/" in name:
-        raise ValueError(f"no recording id for {path!r}")
-    return name
-
-
 def registered_recordings(libraries: Libraries) -> dict[str, dict[str, Any]]:
     """The personal ``recordings.json``: absolute path -> ``{"setup": ref, "registered_at": ...}``."""
 
@@ -208,13 +203,13 @@ def register_recording(libraries: Libraries, path: str | Path, setup_ref: str) -
 
     get_setup(libraries, setup_ref)
     resolved = str(Path(path).expanduser().resolve())
-    if not Path(resolved).is_file():
-        raise FileNotFoundError(f"{resolved} is not a file")
+    if not is_recording(resolved):
+        raise FileNotFoundError(f"{resolved} is not a recording")
     with locked(libraries.personal):
         registry = registered_recordings(libraries)
         registry[resolved] = {"setup": setup_ref, "registered_at": utc_now()}
         write_json(libraries.personal / RECORDINGS_FILE, registry)
-    return {"id": recording_id(resolved), "path": resolved, "setup": setup_ref}
+    return {"id": recording_name(resolved), "path": resolved, "setup": setup_ref}
 
 
 def recording_folders(libraries: Libraries) -> dict[str, dict[str, Any]]:

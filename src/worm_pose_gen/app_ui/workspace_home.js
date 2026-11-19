@@ -266,7 +266,8 @@ function openAddRecordings(ctx, setups, current) {
     const setup = el("select", {"aria-label": "Setup"}, setups.map((s) => el("option", {value: s.ref, selected: s.ref === current}, s.name)));
     const addFolder = el("button", {type: "button", disabled: true}, "Add this folder");
     const addFile = el("button", {class: "primary", type: "button", disabled: true}, "Add file");
-    const isFile = (value) => /\.(h5|hdf5|avi|mp4)$/i.test(value);
+    // A recording: an HDF5 or video file, or an archive's dataset.zarr store (a directory, but one recording).
+    const isFile = (value) => /(\.(h5|hdf5|avi|mp4)|\/dataset\.zarr\/?)$/i.test(value);
     const fail = (failure) => { error.textContent = failure.message; error.hidden = false; };
     const setupName = (ref) => setups.find((s) => s.ref === ref)?.name || ref;
     const showFolders = async () => {
@@ -290,7 +291,7 @@ function openAddRecordings(ctx, setups, current) {
       crumbs.textContent = listing.path;
       path.value = listing.path;
       addFolder.disabled = false; addFile.disabled = true;
-      const entries = listing.entries.filter((entry) => ["dir", "h5", "video"].includes(entry.kind));
+      const entries = listing.entries.filter((entry) => ["dir", "h5", "archive", "video"].includes(entry.kind));
       list.replaceChildren(
         ...(listing.parent ? [el("div", {class: "item", onclick: () => browse(listing.parent)}, "↑ ..")] : []),
         ...entries.map((entry) => el("div", {class: "item", onclick: () => {

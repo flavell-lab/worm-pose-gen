@@ -37,6 +37,7 @@ import numpy as np
 from scipy import ndimage
 
 from worm_pose_gen.recordings import RecordingSource
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.settings import CACHE_DIR, RUNS_DIR
 from worm_pose_gen.stage_alignment import (
     CALIBRATION_LAGS,
@@ -121,7 +122,7 @@ def calibrate(recording: Path, anchors: int, mask_of: MaskOf | None) -> dict[str
     frames = np.unique(np.linspace(reliable[0], reliable[-1] - max(CALIBRATION_LAGS), anchors).astype(np.int64))
     shifts = measure_shifts(recording, frames, CALIBRATION_LAGS, mask_of)
     calibration = fit_calibration(track, shifts)
-    calibration.save(DEFAULT_CACHE / f"{recording.stem}.json")
+    calibration.save(DEFAULT_CACHE / f"{recording_name(recording)}.json")
     summary = summarize(recording, shifts, calibration)
     print(json.dumps({k: summary[k] for k in ("recording", "calibration", "um_per_px", "rotation_deg", "residual_by_lag")}), flush=True)
     return summary
@@ -341,7 +342,7 @@ def main() -> None:
         summary = calibrate(workspace.recording, args.anchors, mask_of)
         report["recordings"].append(summary)
         calibration = StageCalibration.from_dict(summary["calibration"])
-        name = workspace.recording.stem
+        name = workspace.recording_name(recording)
         report["figure_frames"] = figure(
             workspace, calibration, *args.figure_frames, args.output_dir / f"{name}_lag16_aligned_vs_unaligned.png"
         )

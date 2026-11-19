@@ -1,11 +1,13 @@
-"""Frames of a recording read at random, from an HDF5 dataset or a video in place.
+"""Frames of a recording read at random, from an HDF5 dataset, an archive store or a video in place.
 
 Every reader of a recording asks for frames out of order: the timeline
 scrubs, Labeling shows context frames, the body network reads time-lagged
 neighbours, refits read ranges, and the flat field samples frames spread
 over the recording.  :func:`open_frames` gives each the same reader for an
-HDF5 recording (a ``[T,H,W]`` dataset, one frame per chunk) and for a video
-(``.avi``, ``.mp4``) decoded through PyAV.
+HDF5 recording (a ``[T,H,W]`` dataset, one frame per chunk), for a dataset
+of the lab's raw-data archive (its ``behavior/nir`` array, one frame per
+chunk; :mod:`.recording_files`) and for a video (``.avi``, ``.mp4``)
+decoded through PyAV.
 
 A video is indexed once: frame ``k`` is the ``k``-th frame the decoder
 outputs, identified by its presentation timestamp, so a frame is the same
@@ -45,16 +47,15 @@ from typing import Iterator, Sequence
 import warnings
 
 import av
-import h5py
 import numpy as np
 from numpy.typing import NDArray
 
+from .recording_files import ARCHIVE_NAME, HDF5_SUFFIXES, VIDEO_SUFFIXES, open_metadata, recording_kind
 from .settings import CACHE_DIR
 
 
+# The frames' dataset under the NIR h5's names (an archive store's behavior/nir).
 DATASET_PATH = "/img_nir"
-HDF5_SUFFIXES = (".h5", ".hdf5")
-VIDEO_SUFFIXES = (".avi", ".mp4")
 INDEX_DIR = CACHE_DIR / "video_index"
 INDEX_VERSION = 3
 # Decoded frames kept per video reader: a body-network context window (33 frames, temporal_context.MAX_LAG = 16)
@@ -66,15 +67,15 @@ DECODE_THREADS = 4
 
 
 def open_frames(path: Path | str, dataset: str = DATASET_PATH) -> FrameReader:
-    """The reader of the recording at ``path``, chosen by suffix; ``dataset`` names the HDF5 dataset and is ignored for videos."""
+    """The reader of the recording at ``path``, chosen by name; ``dataset`` names the frames' dataset (h5 names, also for an archive store) and is ignored for videos."""
 
     path = Path(path)
-    suffix = path.suffix.lower()
-    if suffix in HDF5_SUFFIXES:
-        return Hdf5Frames(path, dataset)
-    if suffix in VIDEO_SUFFIXES:
+    kind = recording_kind(path)
+    if kind in ("h5", "archive"):
+        return ArrayFrames(path, dataset)
+    if kind == "video":
         return VideoFrames(path)
-    raise ValueError(f"{path}: not a recording ({', '.join((*HDF5_SUFFIXES, *VIDEO_SUFFIXES))})")
+    raise ValueError(f"{path}: not a recording ({', '.join((*HDF5_SUFFIXES, *VIDEO_SUFFIXES, ARCHIVE_NAME))})")
 
 
 class FrameReader:
@@ -90,7 +91,7 @@ class FrameReader:
     # Frames per second, when the file records it.
     fps: float | None
     # Each frame's time in seconds from the first frame, when the frames carry it: a video's presentation
-    # timestamps.  None for HDF5, whose camera timestamps live in the acquisition metadata (export_table).
+    # timestamps.  None for HDF5 and archive stores, whose camera timestamps live in the acquisition metadata (export_table).
     times: NDArray[np.float64] | None
 
     def __getitem__(self, key: int | slice) -> NDArray[np.uint8]:
@@ -132,13 +133,13 @@ class FrameReader:
         self.close()
 
 
-class Hdf5Frames(FrameReader):
-    """A ``[T, H, W]`` HDF5 dataset; frames are cast to uint8 as read."""
+class ArrayFrames(FrameReader):
+    """A ``[T, H, W]`` array of an HDF5 recording or an archive store (:func:`.recording_files.open_metadata`); frames are cast to uint8 as read."""
 
     def __init__(self, path: Path, dataset: str = DATASET_PATH) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
-        self._handle = h5py.File(self.path, "r")
+        self._handle = open_metadata(self.path)
         try:
             if dataset not in self._handle:
                 raise KeyError(f"{self.path}: no dataset {dataset}")

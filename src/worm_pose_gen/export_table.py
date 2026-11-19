@@ -34,7 +34,6 @@ from pathlib import Path
 import shutil
 from typing import Any, Callable
 
-import h5py
 import numpy as np
 from numpy.typing import NDArray
 import pyarrow as pa
@@ -43,6 +42,7 @@ import torch
 
 from .frame_reader import open_frames
 from .geometry import curvature as signed_curvature, resample_centerline
+from .recording_files import open_metadata, recording_name
 from .run_records import timestamp_slug
 from .stage_alignment import STAGE_DATASET, recording_calibration, substrate_shift_px
 
@@ -216,7 +216,7 @@ def read_recording_motion(recording: Path, dataset: str, frames: np.ndarray) -> 
     """``(time_s, stage_px, notes)`` of ``frames`` from the recording's timestamps and acquisition metadata; either is ``None`` when absent.
 
     ``time_s`` is a video's presentation timestamp (``FrameReader.times``) or
-    an HDF5 recording's camera timestamp, relative to the first frame, and
+    an HDF5 recording's or archive store's camera timestamp, relative to the first frame, and
     ``notes["time_source"]`` says which.  Camera timestamps are used only
     when the saved-frame rows of the camera metadata match the frame count of
     ``dataset`` one to one.
@@ -239,7 +239,7 @@ def read_recording_motion(recording: Path, dataset: str, frames: np.ndarray) -> 
         if times is not None:
             notes["time_source"] = {"source": "video presentation timestamps", "origin": "the video's first frame"}
         else:
-            with h5py.File(recording, "r") as handle:
+            with open_metadata(recording) as handle:
                 times = _saved_frame_times(handle, total, notes)
     except (OSError, KeyError, ValueError) as error:
         notes["error"] = f"recording unreadable: {type(error).__name__}: {error}"
@@ -259,7 +259,7 @@ def read_recording_motion(recording: Path, dataset: str, frames: np.ndarray) -> 
     return (None if times is None else times[frames]), stage, notes
 
 
-def _saved_frame_times(handle: h5py.File, total: int, notes: dict[str, Any]) -> FloatArray | None:
+def _saved_frame_times(handle: Any, total: int, notes: dict[str, Any]) -> FloatArray | None:
     group = handle.get(CAMERA_GROUP)
     if group is None or not all(key in group for key in ("q_iter_save", "q_recording", "img_timestamp")):
         notes["time"] = f"no {CAMERA_GROUP} timestamps"
@@ -393,7 +393,7 @@ def export(
         "status": {"counts": {str(v): int(c) for v, c in zip(values, counts)}, "definitions": STATUS_DEFINITIONS},
         "columns": columns,
     }
-    directory = write_export(Path(exports_dir), f"{Path(recording).stem}_{timestamp_slug()}", table, metadata)
+    directory = write_export(Path(exports_dir), f"{recording_name(recording)}_{timestamp_slug()}", table, metadata)
     written = json.loads((directory / METADATA_FILE).read_text())
     return {**written, "path": str(directory / written["table"])}
 

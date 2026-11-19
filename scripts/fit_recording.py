@@ -110,6 +110,7 @@ from worm_pose_gen.pose_run import (
     write_overlay_video,
 )
 from worm_pose_gen.prefetch import prefetched
+from worm_pose_gen.recording_files import recording_name
 from worm_pose_gen.run_records import checkpoint_fingerprint, git_revision, timestamp_slug, utc_now
 from worm_pose_gen.settings import CACHE_DIR, RUNS_DIR
 
@@ -355,7 +356,7 @@ def main() -> int:
         raise SystemExit(f"no frames in [{start}, {stop}) of {total}")
     indices = list(range(start, stop, args.step))
     n = len(indices)
-    stem = args.name or f"{args.recording.stem}_f{start:06d}-{stop - 1:06d}" + (f"_s{args.step}" if args.step > 1 else "")
+    stem = args.name or f"{recording_name(args.recording)}_f{start:06d}-{stop - 1:06d}" + (f"_s{args.step}" if args.step > 1 else "")
     run_dir = args.output_dir / f"{timestamp_slug(started)}_{stem}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -504,7 +505,7 @@ def main() -> int:
     if args.video:
         t_video = time.perf_counter()
         write_overlay_video(
-            run_dir / "overlay.mp4", frames.frames, frames.field(), arrays, caption_prefix=args.recording.stem,
+            run_dir / "overlay.mp4", frames.frames, frames.field(), arrays, caption_prefix=recording_name(args.recording),
             fps=args.fps, scale=args.scale, quality=args.quality, slab=args.slab, device=device,
         )
         timing["video"] += time.perf_counter() - t_video
